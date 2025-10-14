@@ -278,20 +278,91 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
 
     exports.set_named_property("string", string_fn)?;
+
+    let substring_fn = env.create_function_from_closure("substring", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        let start = arg_to_json_value(&ctx, 1)?;
+        let length = arg_to_json_value(&ctx, 2)?;
+        match strings_impl::substring(&value, &start, &length) {
+            Ok(result) => json_value_to_js(ctx.env, result),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+    exports.set_named_property("substring", substring_fn)?;
+
+    let substring_before_fn = env.create_function_from_closure("substringBefore", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        let chars = arg_to_json_value(&ctx, 1)?;
+        match strings_impl::substring_before(&value, &chars) {
+            Ok(result) => json_value_to_js(ctx.env, result),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+    exports.set_named_property("substringBefore", substring_before_fn)?;
+
+    let substring_after_fn = env.create_function_from_closure("substringAfter", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        let chars = arg_to_json_value(&ctx, 1)?;
+        match strings_impl::substring_after(&value, &chars) {
+            Ok(result) => json_value_to_js(ctx.env, result),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+    exports.set_named_property("substringAfter", substring_after_fn)?;
+
+    let lowercase_fn = env.create_function_from_closure("lowercase", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        match strings_impl::lowercase(&value) {
+            Ok(result) => json_value_to_js(ctx.env, result),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+    exports.set_named_property("lowercase", lowercase_fn)?;
+
+    let uppercase_fn = env.create_function_from_closure("uppercase", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        match strings_impl::uppercase(&value) {
+            Ok(result) => json_value_to_js(ctx.env, result),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+    exports.set_named_property("uppercase", uppercase_fn)?;
+
+    let length_fn = env.create_function_from_closure("length", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        match strings_impl::length(&value) {
+            Ok(result) => json_value_to_js(ctx.env, result),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+    exports.set_named_property("length", length_fn)?;
+
+    let trim_fn = env.create_function_from_closure("trim", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        match strings_impl::trim(&value) {
+            Ok(result) => json_value_to_js(ctx.env, result),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+    exports.set_named_property("trim", trim_fn)?;
+
+    let pad_fn = env.create_function_from_closure("pad", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        let width = arg_to_json_value(&ctx, 1)?;
+        let char_value = arg_to_json_value(&ctx, 2)?;
+        match strings_impl::pad(&value, &width, &char_value) {
+            Ok(result) => json_value_to_js(ctx.env, result),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+    exports.set_named_property("pad", pad_fn)?;
+
     Ok(())
 }
 
 fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     const UNIMPLEMENTED: &[&str] = &[
         "count",
-        "substring",
-        "substringBefore",
-        "substringAfter",
-        "lowercase",
-        "uppercase",
-        "length",
-        "trim",
-        "pad",
         "match",
         "contains",
         "replace",
