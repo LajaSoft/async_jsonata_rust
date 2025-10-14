@@ -58,7 +58,7 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
 ## Status Tracking
 - Maintain a `PORTING.md` matrix mapping JSONata features to Rust modules with state (`pending`, `partial`, `done`).
 - Every PR must include: affected layer, tests run, parity proof.
-- With the JS fallback removed, expect the upstream JS suite to fail until each built-in is reimplemented; track failing groups against the porting matrix.
+- With the JS fallback removed, expect the upstream JS suite to fail until each built-in is reimplemented; track failing groups against the porting matrix. Current Rust surface covers math helpers together with `lookup`, `append`, `exists`, and `keys`.
 
 ## Open Questions
 - Decide between `napi-rs` vs `neon` vs pure WASM bridge for the Node adapter.

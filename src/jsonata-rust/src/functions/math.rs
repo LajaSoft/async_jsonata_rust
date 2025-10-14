@@ -17,10 +17,7 @@ pub fn max(args: Option<&[f64]>) -> Option<f64> {
     if slice.is_empty() {
         return None;
     }
-    slice
-        .iter()
-        .copied()
-        .reduce(f64::max)
+    slice.iter().copied().reduce(f64::max)
 }
 
 pub fn min(args: Option<&[f64]>) -> Option<f64> {
@@ -28,10 +25,7 @@ pub fn min(args: Option<&[f64]>) -> Option<f64> {
     if slice.is_empty() {
         return None;
     }
-    slice
-        .iter()
-        .copied()
-        .reduce(f64::min)
+    slice.iter().copied().reduce(f64::min)
 }
 
 pub fn average(args: Option<&[f64]>) -> Option<f64> {

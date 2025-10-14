@@ -2,7 +2,8 @@ use napi::bindgen_prelude::*;
 use napi::{CallContext, Env, JsObject, JsUnknown, ValueType};
 use napi_derive::napi;
 
-use jsonata_rust::functions::math as math_impl;
+use jsonata_rust::functions::{core as core_impl, math as math_impl};
+use jsonata_rust::types::{JsonArray, JsonObject, JsonValue};
 
 fn option_number_to_js(env: &Env, value: Option<f64>) -> napi::Result<JsUnknown> {
     match value {
@@ -44,19 +45,28 @@ fn extract_numeric_args(ctx: &CallContext) -> napi::Result<Option<Vec<f64>>> {
 fn register_math(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     let sum = env.create_function_from_closure("sum", |ctx| {
         let values = extract_numeric_args(&ctx)?;
-        option_number_to_js(ctx.env, math_impl::sum(values.as_ref().map(|v| v.as_slice())))
+        option_number_to_js(
+            ctx.env,
+            math_impl::sum(values.as_ref().map(|v| v.as_slice())),
+        )
     })?;
     exports.set_named_property("sum", sum)?;
 
     let max = env.create_function_from_closure("max", |ctx| {
         let values = extract_numeric_args(&ctx)?;
-        option_number_to_js(ctx.env, math_impl::max(values.as_ref().map(|v| v.as_slice())))
+        option_number_to_js(
+            ctx.env,
+            math_impl::max(values.as_ref().map(|v| v.as_slice())),
+        )
     })?;
     exports.set_named_property("max", max)?;
 
     let min = env.create_function_from_closure("min", |ctx| {
         let values = extract_numeric_args(&ctx)?;
-        option_number_to_js(ctx.env, math_impl::min(values.as_ref().map(|v| v.as_slice())))
+        option_number_to_js(
+            ctx.env,
+            math_impl::min(values.as_ref().map(|v| v.as_slice())),
+        )
     })?;
     exports.set_named_property("min", min)?;
 
@@ -68,6 +78,144 @@ fn register_math(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
         )
     })?;
     exports.set_named_property("average", average)?;
+
+    Ok(())
+}
+
+fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Result<JsonValue> {
+    match value.get_type()? {
+        ValueType::Undefined => Ok(JsonValue::Undefined),
+        ValueType::Null => Ok(JsonValue::Null),
+        ValueType::Boolean => Ok(JsonValue::Bool(value.coerce_to_bool()?.get_value()?)),
+        ValueType::Number => Ok(JsonValue::Number(value.coerce_to_number()?.get_double()?)),
+        ValueType::String => Ok(JsonValue::String(
+            value.coerce_to_string()?.into_utf8()?.as_str()?.to_owned(),
+        )),
+        ValueType::BigInt => Ok(JsonValue::String(
+            value.coerce_to_string()?.into_utf8()?.as_str()?.to_owned(),
+        )),
+        ValueType::Object => {
+            let object = value.coerce_to_object()?;
+            if object.is_array()? {
+                let length = object.get_array_length()?;
+                let mut elements = Vec::with_capacity(length as usize);
+                for index in 0..length {
+                    let element: JsUnknown = object.get_element(index)?;
+                    elements.push(js_unknown_to_json_value(env, element)?);
+                }
+
+                let mut is_sequence = false;
+                if object.has_named_property("sequence")? {
+                    let flag: JsUnknown = object.get_named_property("sequence")?;
+                    is_sequence = match flag.get_type()? {
+                        ValueType::Boolean => flag.coerce_to_bool()?.get_value()?,
+                        ValueType::Number => flag.coerce_to_number()?.get_double()? != 0.0,
+                        ValueType::String => flag
+                            .coerce_to_string()?
+                            .into_utf8()?
+                            .as_str()?
+                            .eq_ignore_ascii_case("true"),
+                        _ => true,
+                    };
+                }
+
+                Ok(JsonValue::Array(JsonArray::new(elements, is_sequence)))
+            } else {
+                let property_names = object.get_property_names()?;
+                let total = property_names.get_array_length()?;
+                let mut props = Vec::with_capacity(total as usize);
+                for index in 0..total {
+                    let name_value: JsUnknown = property_names.get_element(index)?;
+                    let name = name_value
+                        .coerce_to_string()?
+                        .into_utf8()?
+                        .as_str()?
+                        .to_owned();
+                    let property: JsUnknown = object.get_named_property(&name)?;
+                    let value = js_unknown_to_json_value(env, property)?;
+                    props.push((name, value));
+                }
+                Ok(JsonValue::Object(JsonObject(props)))
+            }
+        }
+        _ => Err(Error::new(
+            Status::InvalidArg,
+            "Unsupported argument type for Rust implementation",
+        )),
+    }
+}
+
+fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUnknown> {
+    match value {
+        JsonValue::Undefined => env.get_undefined().map(|v| v.into_unknown()),
+        JsonValue::Null => env.get_null().map(|v| v.into_unknown()),
+        JsonValue::Bool(flag) => env.get_boolean(flag).map(|v| v.into_unknown()),
+        JsonValue::Number(num) => env.create_double(num).map(|v| v.into_unknown()),
+        JsonValue::String(text) => env.create_string(&text).map(|v| v.into_unknown()),
+        JsonValue::Array(array) => {
+            let mut js_array: JsObject = env.create_array_with_length(array.elements.len())?;
+            for (index, element) in array.elements.into_iter().enumerate() {
+                let js_value = json_value_to_js(env, element)?;
+                js_array.set_element(index as u32, js_value)?;
+            }
+            if array.is_sequence {
+                let flag = env.get_boolean(true)?;
+                js_array.set_named_property("sequence", flag)?;
+            }
+            Ok(js_array.into_unknown())
+        }
+        JsonValue::Object(JsonObject(entries)) => {
+            let mut js_object = env.create_object()?;
+            for (key, entry_value) in entries {
+                let js_value = json_value_to_js(env, entry_value)?;
+                js_object.set_named_property(&key, js_value)?;
+            }
+            Ok(js_object.into_unknown())
+        }
+    }
+}
+
+fn arg_to_json_value(ctx: &CallContext, index: usize) -> napi::Result<JsonValue> {
+    if index >= ctx.length {
+        return Ok(JsonValue::Undefined);
+    }
+    let value: JsUnknown = ctx.get(index)?;
+    js_unknown_to_json_value(ctx.env, value)
+}
+
+fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
+    let lookup = env.create_function_from_closure("lookup", |ctx| {
+        if ctx.length < 2 {
+            return ctx.env.get_undefined().map(|v| v.into_unknown());
+        }
+        let input = arg_to_json_value(&ctx, 0)?;
+        let key: String = ctx.get(1)?;
+        let result = core_impl::lookup(&input, &key);
+        json_value_to_js(ctx.env, result)
+    })?;
+    exports.set_named_property("lookup", lookup)?;
+
+    let append = env.create_function_from_closure("append", |ctx| {
+        let left = arg_to_json_value(&ctx, 0)?;
+        let right = arg_to_json_value(&ctx, 1)?;
+        let result = core_impl::append(&left, &right);
+        json_value_to_js(ctx.env, result)
+    })?;
+    exports.set_named_property("append", append)?;
+
+    let exists = env.create_function_from_closure("exists", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        let result = core_impl::exists(&value);
+        json_value_to_js(ctx.env, result)
+    })?;
+    exports.set_named_property("exists", exists)?;
+
+    let keys = env.create_function_from_closure("keys", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        let result = core_impl::keys(&value);
+        json_value_to_js(ctx.env, result)
+    })?;
+    exports.set_named_property("keys", keys)?;
 
     Ok(())
 }
@@ -107,10 +255,6 @@ fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()>
         "single",
         "foldLeft",
         "sift",
-        "keys",
-        "lookup",
-        "append",
-        "exists",
         "spread",
         "merge",
         "reverse",
@@ -144,6 +288,7 @@ fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()>
 pub fn load_functions(env: Env) -> napi::Result<JsObject> {
     let mut exports = env.create_object()?;
     register_math(&env, &mut exports)?;
+    register_core(&env, &mut exports)?;
     register_unimplemented(&env, &mut exports)?;
     Ok(exports)
 }

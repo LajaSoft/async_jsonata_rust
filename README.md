@@ -45,7 +45,7 @@ Rust-native reimplementation of the JSONata query language with full compatibili
    docker compose run --rm dev bash -lc "cd src/jsonata && pnpm test"
    ```
    The container mounts the repository under `/workspace`; all commands run against the checked-out sources.
-5. Exercise the hybrid JS/Rust build (only math helpers implemented; other built-ins throw `not implemented` until ported):
+5. Exercise the hybrid JS/Rust build (math helpers plus `lookup`, `append`, `exists`, and `keys` currently implemented; remaining built-ins will throw `not implemented` until ported):
    ```bash
    docker compose run --rm dev bash -lc "cd src/jsonata-js-rust && pnpm install"
    docker compose run --rm dev bash -lc "cd src/jsonata-js-rust && pnpm test"
