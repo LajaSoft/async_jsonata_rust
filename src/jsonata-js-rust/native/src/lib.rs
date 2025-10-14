@@ -2,8 +2,8 @@ use napi::bindgen_prelude::*;
 use napi::{CallContext, Env, JsObject, JsUnknown, ValueType};
 use napi_derive::napi;
 
-use jsonata_rust::functions::{core as core_impl, math as math_impl};
-use jsonata_rust::types::{JsonArray, JsonObject, JsonValue};
+use jsonata_rust::functions::{core as core_impl, math as math_impl, strings as strings_impl};
+use jsonata_rust::types::{JsonArray, JsonError, JsonObject, JsonValue};
 
 fn option_number_to_js(env: &Env, value: Option<f64>) -> napi::Result<JsUnknown> {
     match value {
@@ -119,7 +119,26 @@ fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Result<JsonVal
                     };
                 }
 
-                Ok(JsonValue::Array(JsonArray::new(elements, is_sequence)))
+                let mut outer_wrapper = false;
+                if object.has_named_property("outerWrapper")? {
+                    let flag: JsUnknown = object.get_named_property("outerWrapper")?;
+                    outer_wrapper = match flag.get_type()? {
+                        ValueType::Boolean => flag.coerce_to_bool()?.get_value()?,
+                        ValueType::Number => flag.coerce_to_number()?.get_double()? != 0.0,
+                        ValueType::String => flag
+                            .coerce_to_string()?
+                            .into_utf8()?
+                            .as_str()?
+                            .eq_ignore_ascii_case("true"),
+                        _ => true,
+                    };
+                }
+
+                Ok(JsonValue::Array(JsonArray::new(
+                    elements,
+                    is_sequence,
+                    outer_wrapper,
+                )))
             } else {
                 let property_names = object.get_property_names()?;
                 let total = property_names.get_array_length()?;
@@ -162,6 +181,10 @@ fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUnknown> {
                 let flag = env.get_boolean(true)?;
                 js_array.set_named_property("sequence", flag)?;
             }
+            if array.outer_wrapper {
+                let flag = env.get_boolean(true)?;
+                js_array.set_named_property("outerWrapper", flag)?;
+            }
             Ok(js_array.into_unknown())
         }
         JsonValue::Object(JsonObject(entries)) => {
@@ -181,6 +204,13 @@ fn arg_to_json_value(ctx: &CallContext, index: usize) -> napi::Result<JsonValue>
     }
     let value: JsUnknown = ctx.get(index)?;
     js_unknown_to_json_value(ctx.env, value)
+}
+
+fn json_error_to_napi(err: JsonError) -> napi::Error {
+    napi::Error::new(
+        Status::GenericFailure,
+        format!("{}: {}", err.code, err.message),
+    )
 }
 
 fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
@@ -220,10 +250,40 @@ fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     Ok(())
 }
 
+fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
+    let string_fn = env.create_function_from_closure("string", |ctx| {
+        if ctx.length == 0 {
+            return ctx.env.get_undefined().map(|v| v.into_unknown());
+        }
+
+        let first: JsUnknown = ctx.get(0)?;
+        match first.get_type()? {
+            ValueType::Undefined => return ctx.env.get_undefined().map(|v| v.into_unknown()),
+            ValueType::Function => return ctx.env.create_string("").map(|v| v.into_unknown()),
+            _ => {}
+        }
+
+        let prettify = if ctx.length > 1 {
+            let flag: JsUnknown = ctx.get(1)?;
+            flag.coerce_to_bool()?.get_value()?
+        } else {
+            false
+        };
+
+        let value = js_unknown_to_json_value(ctx.env, first)?;
+        match strings_impl::string(&value, prettify) {
+            Ok(result) => json_value_to_js(ctx.env, result),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+
+    exports.set_named_property("string", string_fn)?;
+    Ok(())
+}
+
 fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     const UNIMPLEMENTED: &[&str] = &[
         "count",
-        "string",
         "substring",
         "substringBefore",
         "substringAfter",
@@ -289,6 +349,7 @@ pub fn load_functions(env: Env) -> napi::Result<JsObject> {
     let mut exports = env.create_object()?;
     register_math(&env, &mut exports)?;
     register_core(&env, &mut exports)?;
+    register_strings(&env, &mut exports)?;
     register_unimplemented(&env, &mut exports)?;
     Ok(exports)
 }

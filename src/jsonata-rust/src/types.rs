@@ -1,14 +1,18 @@
+use std::fmt;
+
 #[derive(Clone, Debug)]
 pub struct JsonArray {
     pub elements: Vec<JsonValue>,
     pub is_sequence: bool,
+    pub outer_wrapper: bool,
 }
 
 impl JsonArray {
-    pub fn new(elements: Vec<JsonValue>, is_sequence: bool) -> Self {
+    pub fn new(elements: Vec<JsonValue>, is_sequence: bool, outer_wrapper: bool) -> Self {
         Self {
             elements,
             is_sequence,
+            outer_wrapper,
         }
     }
 
@@ -16,6 +20,7 @@ impl JsonArray {
         Self {
             elements: Vec::new(),
             is_sequence: true,
+            outer_wrapper: false,
         }
     }
 }
@@ -48,10 +53,33 @@ impl JsonValue {
     }
 
     pub fn sequence(elements: Vec<JsonValue>) -> Self {
-        JsonValue::Array(JsonArray::new(elements, true))
+        JsonValue::Array(JsonArray::new(elements, true, false))
     }
 
     pub fn is_undefined(&self) -> bool {
         matches!(self, JsonValue::Undefined)
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct JsonError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl JsonError {
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for JsonError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for JsonError {}

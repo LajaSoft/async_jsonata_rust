@@ -22,7 +22,7 @@ pub fn lookup(input: &JsonValue, key: &str) -> JsonValue {
             if results.is_empty() {
                 JsonValue::Undefined
             } else {
-                JsonValue::Array(JsonArray::new(results, true))
+                JsonValue::Array(JsonArray::new(results, true, false))
             }
         }
         JsonValue::Object(JsonObject(props)) => {
@@ -55,7 +55,7 @@ pub fn append(left: &JsonValue, right: &JsonValue) -> JsonValue {
         value => combined.push(value.clone()),
     }
 
-    JsonValue::Array(JsonArray::new(combined, true))
+    JsonValue::Array(JsonArray::new(combined, true, false))
 }
 
 pub fn exists(value: &JsonValue) -> JsonValue {
@@ -79,14 +79,14 @@ pub fn keys(value: &JsonValue) -> JsonValue {
                     }
                 }
             }
-            JsonValue::Array(JsonArray::new(ordered, true))
+            JsonValue::Array(JsonArray::new(ordered, true, false))
         }
         JsonValue::Object(JsonObject(props)) => {
             let mut ordered = Vec::with_capacity(props.len());
             for (name, _) in props {
                 ordered.push(JsonValue::String(name.clone()));
             }
-            JsonValue::Array(JsonArray::new(ordered, true))
+            JsonValue::Array(JsonArray::new(ordered, true, false))
         }
         _ => JsonValue::Array(JsonArray::empty_sequence()),
     }
