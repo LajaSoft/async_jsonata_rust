@@ -12,11 +12,12 @@ Rust-native reimplementation of the JSONata query language with full compatibili
 
 ## Current Workspace Layout
 - `src/jsonata/` — untouched upstream JSONata sources and tests (do not modify).
-- `src/jsonata-js-rust/` — JS facade that will call into Rust replacements via FFI.
+- `src/jsonata-js-rust/` — hybrid facade that now sources every built-in from the Rust bridge.
+- `src/jsonata-js-rust/native/` — `napi-rs` bridge exporting `load_functions()` (math helpers implemented, others stubbed for porting).
 - `src/jsonata-rust/` — Rust crate workspace (crate scaffolding, tests, WASM targets).
 - `Dockerfile` — base image providing Node.js 20, Rust toolchain, and pnpm.
 - `compose.yml` — Docker Compose definition for the dev environment with Node + Rust.
-- `scripts/` — automation helpers (planned; e.g. sync upstream, run conformance).
+- `src/jsonata-js-rust/scripts/` — helper scripts for compiling the bridge and (temporarily) skipping coverage/browser builds while we focus on parity.
 
 ## Getting Started
 > Bootstrap is in progress; expect these steps to evolve as tooling lands.
@@ -44,6 +45,12 @@ Rust-native reimplementation of the JSONata query language with full compatibili
    docker compose run --rm dev bash -lc "cd src/jsonata && pnpm test"
    ```
    The container mounts the repository under `/workspace`; all commands run against the checked-out sources.
+5. Exercise the hybrid JS/Rust build (only math helpers implemented; other built-ins throw `not implemented` until ported):
+   ```bash
+   docker compose run --rm dev bash -lc "cd src/jsonata-js-rust && pnpm install"
+   docker compose run --rm dev bash -lc "cd src/jsonata-js-rust && pnpm test"
+   ```
+   The test run builds `./native` via `napi`; expect widespread failures until the remaining built-ins are ported from Rust.
 
 As Rust components become available, `cargo test` will provide fine-grained validation of the ported modules.
 

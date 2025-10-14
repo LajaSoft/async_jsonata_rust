@@ -5,8 +5,9 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
 
 ## Repository Layout
 - `src/jsonata/`: pristine copy of upstream JSONata (keep read-only, sync directly from the upstream repo).
-- `src/jsonata-js-rust/`: playground where JS modules will be patched to call into Rust via FFI while retaining upstream structure.
+- `src/jsonata-js-rust/`: hybrid runtime mirroring upstream layout but delegating built-ins to Rust via FFI.
 - `src/jsonata-rust/`: home for the native Rust crate, tests, and future WASM build artifacts.
+- `src/jsonata-js-rust/native/`: `napi-rs` bridge exposing Rust helpers to the hybrid JS runtime, exporting a `load_functions()` bridge object.
 - `Dockerfile`: base image with Node.js 20, Rust toolchain, and pnpm preconfigured.
 - `compose.yml`: Docker Compose service wiring the dev container with workspace mounts and shared cargo cache.
 
@@ -23,6 +24,7 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
    - Scaffold the Rust crate inside `src/jsonata-rust` exposing a C-compatible surface callable from Node via `napi-rs` (preferred) or `neon` fallback.
    - Build the dev container (`docker compose build`) to obtain a reproducible Node+Rust toolchain.
    - Baseline by running the upstream JS test suite unchanged inside the container (`docker compose run --rm dev pnpm test`).
+   - Introduce the hybrid bridge in `src/jsonata-js-rust/native` and replace `functions.js` with a Rust-provided registry (non-port sections currently throw `not implemented`).
 2. **Atomics Layer**
    - Identify the smallest pure functions (numbers, strings, time, comparators, math ops).
    - Re-implement each atomic in Rust with comprehensive unit tests.
@@ -47,11 +49,16 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
 ## Automation Hooks
 - `scripts/sync_upstream.sh`: refreshes `src/jsonata` from upstream and re-clones into `src/jsonata-js-rust`.
 - `scripts/run_conformance.sh`: executes the upstream JS conformance suite against the hybrid runtime inside Docker.
+- `src/jsonata-js-rust/scripts/build-native.js`: compiles the `napi` bridge so JS tests can load Rust helpers.
+- `src/jsonata-js-rust/scripts/skip-check-coverage.js`: placeholder disabling coverage gates while the bridge evolves.
+- `src/jsonata-js-rust/scripts/skip-browser-build.js`: placeholder disabling browser bundling (Node runtime focus).
+- `src/jsonata-js-rust/src/functions.js`: now a thin shim that imports `native.load_functions()`; Rust controls the full built-in surface.
 - `cargo xtask coverage`: drives code coverage + regression summary.
 
 ## Status Tracking
 - Maintain a `PORTING.md` matrix mapping JSONata features to Rust modules with state (`pending`, `partial`, `done`).
 - Every PR must include: affected layer, tests run, parity proof.
+- With the JS fallback removed, expect the upstream JS suite to fail until each built-in is reimplemented; track failing groups against the porting matrix.
 
 ## Open Questions
 - Decide between `napi-rs` vs `neon` vs pure WASM bridge for the Node adapter.
