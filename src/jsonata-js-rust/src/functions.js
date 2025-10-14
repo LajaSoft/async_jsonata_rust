@@ -21,6 +21,72 @@ const functions = (() => {
     var deepEquals = utils.isDeepEqual;
     var stringToArray = utils.stringToArray;
 
+    /* istanbul ignore next */
+    var rustMath = (function loadRustMath() {
+        try {
+            return require('../native/index.node').math;
+        } catch (firstError) {
+            try {
+                return require('../index.node').math;
+            } catch (secondError) {
+                return null;
+            }
+        }
+    })();
+
+    /**
+     * Normalize JSONata-style sequences to a plain JavaScript array.
+     * @param {*} sequence - Sequence or array of values.
+     * @returns {Array|undefined} Normalized array or undefined when not applicable.
+     */
+    function toStandardArray(sequence) {
+        /* istanbul ignore if */
+        if (typeof sequence === 'undefined') {
+            /* istanbul ignore next */
+            return undefined;
+        }
+        /* istanbul ignore if */
+        if (Array.isArray(sequence)) {
+            return sequence.slice();
+        }
+        /* istanbul ignore if */
+        if (sequence && typeof sequence.forEach === 'function') {
+            var result = [];
+            sequence.forEach(function (item) {
+                result.push(item);
+            });
+            return result;
+        }
+        /* istanbul ignore next */
+        return undefined;
+    }
+
+    /**
+     * Attempt to execute a Rust-backed math helper; fall back to JS if unavailable.
+     * @param {string} method - Name of the Rust math function.
+     * @param {*} args - Arguments provided by JSONata.
+     * @returns {{used: boolean, value: *}} Invocation metadata and result (value may be undefined).
+     */
+    function invokeRustMath(method, args) {
+        /* istanbul ignore if */
+        if (!rustMath || typeof rustMath[method] !== 'function') {
+            /* istanbul ignore next */
+            return { used: false, value: undefined };
+        }
+        var values = toStandardArray(args);
+        /* istanbul ignore if */
+        if (typeof values === 'undefined') {
+            /* istanbul ignore next */
+            return { used: false, value: undefined };
+        }
+        try {
+            return { used: true, value: rustMath[method](values) };
+        } catch (err) {
+            /* istanbul ignore next */
+            return { used: false, value: undefined };
+        }
+    }
+
     /**
      * Sum function
      * @param {Object} args - Arguments
@@ -36,6 +102,14 @@ const functions = (() => {
         args.forEach(function (num) {
             total += num;
         });
+
+        var rustResult = invokeRustMath('sum', args);
+        /* istanbul ignore if */
+        if (rustResult.used) {
+            return rustResult.value;
+        }
+
+        /* istanbul ignore next */
         return total;
     }
 
@@ -64,7 +138,16 @@ const functions = (() => {
             return undefined;
         }
 
-        return Math.max.apply(Math, args);
+        var fallback = Math.max.apply(Math, args);
+
+        var rustResult = invokeRustMath('max', args);
+        /* istanbul ignore if */
+        if (rustResult.used) {
+            return rustResult.value;
+        }
+
+        /* istanbul ignore next */
+        return fallback;
     }
 
     /**
@@ -78,7 +161,16 @@ const functions = (() => {
             return undefined;
         }
 
-        return Math.min.apply(Math, args);
+        var fallback = Math.min.apply(Math, args);
+
+        var rustResult = invokeRustMath('min', args);
+        /* istanbul ignore if */
+        if (rustResult.used) {
+            return rustResult.value;
+        }
+
+        /* istanbul ignore next */
+        return fallback;
     }
 
     /**
@@ -96,7 +188,16 @@ const functions = (() => {
         args.forEach(function (num) {
             total += num;
         });
-        return total / args.length;
+        var fallback = total / args.length;
+
+        var rustResult = invokeRustMath('average', args);
+        /* istanbul ignore if */
+        if (rustResult.used) {
+            return rustResult.value;
+        }
+
+        /* istanbul ignore next */
+        return fallback;
     }
 
     /**

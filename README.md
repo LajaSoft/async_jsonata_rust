@@ -43,7 +43,7 @@ Rust-native reimplementation of the JSONata query language with full compatibili
    docker compose run --rm dev bash -lc "cd src/jsonata && pnpm install"
    docker compose run --rm dev bash -lc "cd src/jsonata && pnpm test"
    ```
-   The container mounts the repository under `/workspace`, sharing cargo and pnpm caches across runs.
+   The container mounts the repository under `/workspace`; all commands run against the checked-out sources.
 
 As Rust components become available, `cargo test` will provide fine-grained validation of the ported modules.
 

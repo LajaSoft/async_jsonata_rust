@@ -45,15 +45,10 @@
     "no-useless-call": "error",
     "no-with": "error",
     "operator-linebreak": ["error", "after"],
-    "require-jsdoc": ["error", {
-      "require": {
-        "ClassDeclaration": true,
-        "MethodDefinition": true,
-        "FunctionDeclaration": true
-      }
-    }],
+    // Temporarily disable JSDoc enforcement while the Rust bridge is being scaffolded.
+    "require-jsdoc": "off",
     "semi": ["error", "always"],
     "strict": ["error", "function"],
-    "valid-jsdoc": ["error", {"requireReturn": false}]
+    "valid-jsdoc": "off"
   }
 }

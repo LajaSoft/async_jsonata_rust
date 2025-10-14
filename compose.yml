@@ -9,6 +9,4 @@ services:
     stdin_open: true
     tty: true
     environment:
-      - CARGO_HOME=/workspace/.cargo
-      - RUSTUP_HOME=/workspace/.rustup
-      - PATH=/workspace/.cargo/bin:/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      - PATH=/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
