@@ -20,6 +20,16 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
 
 ## before dig deep into project, just run tests
 
+## Current Focus
+- napi bridge upgraded to `napi` 3.3 without compat shim; native addon builds again and mocha harness runs end-to-end (failing only on still-missing built-ins).
+- Next sprint: finish higher-order/aggregate helpers so the remaining conformance buckets stop falling back to JS (`$map`, `$filter`, `$foldLeft`, `$single`, `$zip`, `$sift`, `$distinct`, `$merge`, etc.).
+- Use the container test harness (fails allowed) to refresh the failure surface and drop logs for analysis:  
+  `docker compose run --rm -e DOCKER_CONFIG=/workspace/.docker --workdir /workspace/src/jsonata-js-rust dev pnpm test || true`
+- The test run writes its full transcript to `tmp/pnpm-test-last.log`; surface the highest-frequency gaps with:  
+  `rg "Function '([^']+)'" -o --no-line-number tmp/pnpm-test-last.log | sort | uniq -c | sort -nr`
+- Scan for bridge issues (current `$map/$zip` still yield `Error: JS: [object Object]`) via:  
+  `rg -n "Error: JS" tmp/pnpm-test-last.log`
+- Prioritise the counts from the latest log snapshot (higher first): `formatNumber`, `type`, `foldLeft`, `distinct`, `single`, `formatBase`, `filter`, `sift`, `merge`, `spread`, `shuffle`, `reverse`, `assert`, followed by the URL/base64 helpers.
 ## Execution Rules
 - **Container-only automation:** Run builds, tests, and tooling exclusively through Docker Compose (`docker compose run --rm dev …`). Host-level execution of the toolchain is off-limits.
 - **Source layout contract:** Treat `src/jsonata/` as upstream-read-only, implement Rust-native logic in `src/jsonata-rust/`, and maintain hybrid glue plus JavaScript-facing tweaks under `src/jsonata-js-rust/`.
