@@ -419,6 +419,7 @@ mod tests {
     use futures::executor::block_on;
     use futures::future::BoxFuture;
     use crate::types::JsonCallable;
+    use std::any::Any;
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone)]
@@ -459,6 +460,10 @@ mod tests {
 
         fn arity(&self) -> Option<usize> {
             Some(self.arity)
+        }
+
+        fn as_any(&self) -> &(dyn Any + Send + Sync) {
+            self
         }
     }
 

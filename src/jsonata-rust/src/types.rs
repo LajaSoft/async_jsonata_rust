@@ -90,6 +90,10 @@ impl JsonFunction {
     pub fn ptr_eq(&self, other: &JsonFunction) -> bool {
         Arc::ptr_eq(&self.callable, &other.callable)
     }
+
+    pub fn as_callable(&self) -> &dyn JsonCallable {
+        &*self.callable
+    }
 }
 
 impl fmt::Debug for JsonFunction {
@@ -148,7 +152,7 @@ impl FunctionContext {
     }
 }
 
-pub trait JsonCallable: Send + Sync {
+pub trait JsonCallable: Send + Sync + Any {
     fn call(
         &self,
         ctx: FunctionContext,
@@ -158,6 +162,8 @@ pub trait JsonCallable: Send + Sync {
     fn arity(&self) -> Option<usize> {
         None
     }
+
+    fn as_any(&self) -> &(dyn Any + Send + Sync);
 }
 
 #[derive(Debug, Clone)]

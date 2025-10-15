@@ -13,6 +13,7 @@ use jsonata_rust::types::{
     CallbackHandle, FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction,
     JsonObject, JsonValue, JsonataFocus,
 };
+use std::any::Any;
 use std::sync::{Arc, Mutex};
 
 fn option_number_to_js(env: &Env, value: Option<f64>) -> napi::Result<JsUnknown> {
@@ -287,10 +288,18 @@ fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUnknown> {
             }
             Ok(js_object.into_unknown())
         }
-        JsonValue::Function(_) => Err(Error::new(
-            Status::InvalidArg,
-            "Cannot convert function value to JavaScript yet",
-        )),
+        JsonValue::Function(function) => {
+            let callable = function.as_callable();
+            if let Some(js_callable) = callable.as_any().downcast_ref::<JsFunctionCallable>() {
+                let js_func = js_callable.to_js_function(env)?;
+                Ok(js_func.into_unknown())
+            } else {
+                Err(Error::new(
+                    Status::InvalidArg,
+                    "Cannot convert function value to JavaScript",
+                ))
+            }
+        }
     }
 }
 
@@ -395,10 +404,14 @@ fn function_context_from_this(ctx: &CallContext) -> napi::Result<FunctionContext
     match this_value.get_type()? {
         ValueType::Undefined | ValueType::Null => Ok(FunctionContext::empty()),
         _ => {
-            let handle = JsThisHandle::new(ctx.env.raw(), &this_value)?;
-            let callback_handle: CallbackHandle = Arc::new(handle);
+            let handle = Arc::new(JsThisHandle::new(ctx.env.raw(), &this_value)?);
+            let focus_value = match handle.to_js_unknown(ctx.env) {
+                Ok(js_this) => js_unknown_to_json_value(ctx.env, js_this).unwrap_or(JsonValue::Undefined),
+                Err(_) => JsonValue::Undefined,
+            };
+            let callback_handle: CallbackHandle = handle.clone();
             Ok(FunctionContext::with_focus(JsonataFocus::with_handle(
-                JsonValue::Undefined,
+                focus_value,
                 Some(callback_handle),
             )))
         }
@@ -448,6 +461,43 @@ impl JsThisHandle {
 }
 
 impl Drop for JsThisHandle {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = sys::napi_delete_reference(self.env, self.reference);
+        }
+    }
+}
+
+struct JsFunctionHandle {
+    env: sys::napi_env,
+    reference: sys::napi_ref,
+}
+
+unsafe impl Send for JsFunctionHandle {}
+unsafe impl Sync for JsFunctionHandle {}
+
+impl JsFunctionHandle {
+    fn new(env: sys::napi_env, func: &JsFunction) -> napi::Result<Self> {
+        let mut reference = std::ptr::null_mut();
+        let raw_func = unsafe { func.raw() };
+        let status = unsafe { sys::napi_create_reference(env, raw_func, 1, &mut reference) };
+        if status != sys::Status::napi_ok {
+            return Err(Error::from_status(Status::from(status)));
+        }
+        Ok(Self { env, reference })
+    }
+
+    fn to_js_function(&self, env: &Env) -> napi::Result<JsFunction> {
+        let mut value = std::ptr::null_mut();
+        let status = unsafe { sys::napi_get_reference_value(env.raw(), self.reference, &mut value) };
+        if status != sys::Status::napi_ok {
+            return Err(Error::from_status(Status::from(status)));
+        }
+        unsafe { JsFunction::from_raw(env.raw(), value) }
+    }
+}
+
+impl Drop for JsFunctionHandle {
     fn drop(&mut self) {
         unsafe {
             let _ = sys::napi_delete_reference(self.env, self.reference);
@@ -766,6 +816,7 @@ struct JsFunctionCallable {
     tsfn: ThreadsafeFunction<Invocation>,
     env_raw: sys::napi_env,
     arity: Option<usize>,
+    function_handle: Arc<JsFunctionHandle>,
 }
 
 struct Invocation {
@@ -796,8 +847,13 @@ impl JsFunctionCallable {
             Err(_) => None,
         };
 
+        let function_handle = Arc::new(JsFunctionHandle::new(env.raw(), &func)?);
+
         let original = func;
         let bridge = env.create_function_from_closure("jsonataCallback", move |ctx| {
+            if ctx.length == 0 {
+                return ctx.env.get_undefined().map(|v| v.into_unknown());
+            }
             let focus_arg: JsUnknown = if ctx.length > 0 {
                 ctx.get(0)?
             } else {
@@ -807,11 +863,15 @@ impl JsFunctionCallable {
             for index in 1..ctx.length {
                 call_args.push(ctx.get(index)?);
             }
-            let this_object = match focus_arg.get_type()? {
+            let focus_type_snapshot = focus_arg.get_type()?;
+            let this_object = match focus_type_snapshot {
                 ValueType::Undefined | ValueType::Null => None,
                 _ => Some(focus_arg.coerce_to_object()?),
             };
-            original.call(this_object.as_ref(), &call_args)
+            match original.call(this_object.as_ref(), &call_args) {
+                Ok(result) => Ok(JsUnknown::try_from(result)?),
+                Err(err) => Err(err),
+            }
         })?;
 
         let tsfn = env.create_threadsafe_function(
@@ -824,25 +884,31 @@ impl JsFunctionCallable {
                 let focus_value = match focus.as_ref() {
                     Some(focus_data) => {
                         if let Some(handle) = &focus_data.handle {
-                            let cloned = Arc::clone(handle);
-                            match Arc::downcast::<JsThisHandle>(cloned) {
-                                Ok(js_handle) => js_handle.to_js_unknown(&ctx.env)?,
-                                Err(_original) => {
-                                    match json_value_to_js(
-                                        &ctx.env,
-                                        focus_data.input.clone(),
-                                    ) {
-                                        Ok(value) => value,
-                                        Err(err) => {
-                                            sender.send(Err(JsonError::new(
-                                                "RUST",
-                                                format!(
-                                                    "Failed to convert callback focus: {}",
-                                                    err
-                                                ),
-                                            )));
-                                            return Err(err);
-                                        }
+                            if let Some(js_handle) =
+                                handle.as_ref().downcast_ref::<JsThisHandle>()
+                            {
+                                match js_handle.to_js_unknown(&ctx.env) {
+                                    Ok(value) => value,
+                                    Err(err) => {
+                                        sender.send(Err(JsonError::new(
+                                            "RUST",
+                                            format!(
+                                                "Failed to convert callback focus: {}",
+                                                err
+                                            ),
+                                        )));
+                                        return Ok(Vec::new());
+                                    }
+                                }
+                            } else {
+                                match json_value_to_js(&ctx.env, focus_data.input.clone()) {
+                                    Ok(value) => value,
+                                    Err(err) => {
+                                        sender.send(Err(JsonError::new(
+                                            "RUST",
+                                            format!("Failed to convert callback focus: {}", err),
+                                        )));
+                                        return Ok(Vec::new());
                                     }
                                 }
                             }
@@ -857,7 +923,7 @@ impl JsFunctionCallable {
                                             err
                                         ),
                                     )));
-                                    return Err(err);
+                                    return Ok(Vec::new());
                                 }
                             }
                         }
@@ -874,7 +940,7 @@ impl JsFunctionCallable {
                                 "RUST",
                                 format!("Failed to convert argument for callback: {}", err),
                             )));
-                            return Err(err);
+                            return Ok(Vec::new());
                         }
                     }
                 }
@@ -886,12 +952,17 @@ impl JsFunctionCallable {
             tsfn,
             env_raw: env.raw(),
             arity,
+            function_handle,
         })
     }
 
     fn env(&self) -> Env {
         // SAFETY: env_raw is valid for the lifetime of the addon
         unsafe { Env::from_raw(self.env_raw) }
+    }
+
+    fn to_js_function(&self, env: &Env) -> napi::Result<JsFunction> {
+        self.function_handle.to_js_function(env)
     }
 }
 
@@ -955,6 +1026,10 @@ impl JsonCallable for JsFunctionCallable {
 
     fn arity(&self) -> Option<usize> {
         self.arity
+    }
+
+    fn as_any(&self) -> &(dyn Any + Send + Sync) {
+        self
     }
 }
 
