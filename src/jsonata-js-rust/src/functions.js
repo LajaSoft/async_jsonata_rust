@@ -56,6 +56,19 @@
                 const result = impl.apply(this, args);
                 if (result && typeof result.then === 'function') {
                     return result.catch((err) => {
+                        // Handle cases where err might be serialized as [object Object]
+                        if (typeof err === 'object' && err !== null) {
+                            if (err.toString() === '[object Object]' || err.message === '[object Object]') {
+                                // Try to extract useful information from other properties
+                                console.error('Encountered [object Object] error:', err);
+                                // Create a more descriptive error
+                                const newErr = new Error('Promise rejection with unclear error details');
+                                newErr.code = 'GenericFailure';
+                                newErr.originalError = err;
+                                normalizeRustError(newErr);
+                                throw newErr;
+                            }
+                        }
                         normalizeRustError(err);
                         throw err;
                     });

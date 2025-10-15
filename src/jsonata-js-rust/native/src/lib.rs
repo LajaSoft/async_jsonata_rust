@@ -547,6 +547,7 @@ fn function_context_from_this(ctx: &CallContext) -> napi::Result<FunctionContext
 }
 
 fn json_error_to_napi(err: JsonError) -> napi::Error {
+    eprintln!("[DEBUG] json_error_to_napi: code={}, message={}", err.code, err.message);
     napi::Error::new(
         Status::GenericFailure,
         format!("{}: {}", err.code, err.message),
@@ -554,7 +555,26 @@ fn json_error_to_napi(err: JsonError) -> napi::Error {
 }
 
 fn napi_error_to_json(code: &'static str, err: napi::Error) -> JsonError {
-    JsonError::new(code, err.to_string())
+    let message = err.to_string();
+    eprintln!("[DEBUG] napi_error_to_json: code={}, message={}", code, message);
+    
+    // Try to extract useful information if the error message is not helpful
+    if message == "[object Object]" || message.is_empty() {
+        let reason = match err.status {
+            Status::InvalidArg => "Invalid argument",
+            Status::ObjectExpected => "Object expected", 
+            Status::StringExpected => "String expected",
+            Status::FunctionExpected => "Function expected",
+            Status::NumberExpected => "Number expected",
+            Status::BooleanExpected => "Boolean expected",
+            Status::ArrayExpected => "Array expected",
+            Status::GenericFailure => "Generic failure",
+            _ => "Unknown napi error",
+        };
+        JsonError::new(code, format!("{} (status: {:?})", reason, err.status))
+    } else {
+        JsonError::new(code, message)
+    }
 }
 
 type JsonCallResult = std::result::Result<JsonValue, JsonError>;

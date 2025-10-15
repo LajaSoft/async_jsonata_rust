@@ -4,3 +4,4 @@ src/jsonata-rust/target/
 .cargo/
 .corepack/
 tmp/
+core*
