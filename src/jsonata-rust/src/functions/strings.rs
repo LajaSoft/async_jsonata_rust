@@ -307,6 +307,10 @@ fn to_jsonata_value(value: &JsonValue) -> Result<Value, JsonError> {
             }
             Ok(Value::Object(map))
         }
+        JsonValue::Function(_) => Err(JsonError::new(
+            "D3137",
+            "Unable to serialise function value",
+        )),
     }
 }
 
@@ -318,6 +322,7 @@ fn to_number(value: &JsonValue) -> Option<f64> {
         JsonValue::Number(num) => Some(*num),
         JsonValue::String(text) => text.parse::<f64>().ok(),
         JsonValue::Array(_) | JsonValue::Object(_) => None,
+        JsonValue::Function(_) => None,
     }
 }
 
@@ -352,6 +357,10 @@ fn ensure_string(value: &JsonValue, prettify: bool) -> Result<Option<String>, Js
                 Ok(None)
             }
         }
+        JsonValue::Function(_) => Err(JsonError::new(
+            "D3137",
+            "Unable to convert function to string",
+        )),
         _ => match string(value, prettify)? {
             JsonValue::Undefined => Ok(None),
             JsonValue::String(text) => Ok(Some(text)),
@@ -404,6 +413,12 @@ pub fn string(value: &JsonValue, prettify: bool) -> Result<JsonValue, JsonError>
                 ));
             }
         }
+        JsonValue::Function(_) => {
+            return Err(JsonError::new(
+                "D3137",
+                "Unable to convert function to string",
+            ))
+        }
         _ => {}
     }
 
@@ -449,6 +464,10 @@ pub fn string(value: &JsonValue, prettify: bool) -> Result<JsonValue, JsonError>
                 .map_err(|err| JsonError::new("D3137", err.to_string()))?;
             Ok(JsonValue::String(result))
         }
+        JsonValue::Function(_) => Err(JsonError::new(
+            "D3137",
+            "Unable to convert function to string",
+        )),
     }
 }
 

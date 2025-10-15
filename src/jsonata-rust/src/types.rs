@@ -1,4 +1,7 @@
+use futures::future::BoxFuture;
+use std::any::Any;
 use std::fmt;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct JsonArray {
@@ -28,7 +31,7 @@ impl JsonArray {
 #[derive(Clone, Debug, PartialEq)]
 pub struct JsonObject(pub Vec<(String, JsonValue)>);
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub enum JsonValue {
     Undefined,
     Null,
@@ -37,6 +40,7 @@ pub enum JsonValue {
     String(String),
     Array(JsonArray),
     Object(JsonObject),
+    Function(JsonFunction),
 }
 
 impl JsonValue {
@@ -61,6 +65,66 @@ impl JsonValue {
     }
 }
 
+#[derive(Clone)]
+pub struct JsonFunction {
+    callable: Arc<dyn JsonCallable>,
+}
+
+impl JsonFunction {
+    pub fn new(callable: Arc<dyn JsonCallable>) -> Self {
+        Self { callable }
+    }
+
+    pub fn call(
+        &self,
+        ctx: FunctionContext,
+        args: Vec<JsonValue>,
+    ) -> BoxFuture<'static, Result<JsonValue, JsonError>> {
+        self.callable.call(ctx, args)
+    }
+
+    pub fn ptr_eq(&self, other: &JsonFunction) -> bool {
+        Arc::ptr_eq(&self.callable, &other.callable)
+    }
+}
+
+impl fmt::Debug for JsonFunction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JsonFunction")
+            .field("callable", &"<opaque>")
+            .finish()
+    }
+}
+
+pub type CallbackHandle = Arc<dyn Any + Send + Sync>;
+
+#[derive(Clone, Default)]
+pub struct FunctionContext {
+    pub this: Option<CallbackHandle>,
+}
+
+impl FunctionContext {
+    pub fn new(this: Option<CallbackHandle>) -> Self {
+        Self { this }
+    }
+
+    pub fn empty() -> Self {
+        Self { this: None }
+    }
+
+    pub fn with_this(this: CallbackHandle) -> Self {
+        Self { this: Some(this) }
+    }
+}
+
+pub trait JsonCallable: Send + Sync {
+    fn call(
+        &self,
+        ctx: FunctionContext,
+        args: Vec<JsonValue>,
+    ) -> BoxFuture<'static, Result<JsonValue, JsonError>>;
+}
+
 #[derive(Debug, Clone)]
 pub struct JsonError {
     pub code: &'static str,
@@ -83,3 +147,34 @@ impl fmt::Display for JsonError {
 }
 
 impl std::error::Error for JsonError {}
+
+impl fmt::Debug for JsonValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            JsonValue::Undefined => write!(f, "Undefined"),
+            JsonValue::Null => write!(f, "Null"),
+            JsonValue::Bool(v) => f.debug_tuple("Bool").field(v).finish(),
+            JsonValue::Number(n) => f.debug_tuple("Number").field(n).finish(),
+            JsonValue::String(s) => f.debug_tuple("String").field(s).finish(),
+            JsonValue::Array(a) => f.debug_tuple("Array").field(a).finish(),
+            JsonValue::Object(o) => f.debug_tuple("Object").field(o).finish(),
+            JsonValue::Function(func) => f.debug_tuple("Function").field(func).finish(),
+        }
+    }
+}
+
+impl PartialEq for JsonValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (JsonValue::Undefined, JsonValue::Undefined) => true,
+            (JsonValue::Null, JsonValue::Null) => true,
+            (JsonValue::Bool(a), JsonValue::Bool(b)) => a == b,
+            (JsonValue::Number(a), JsonValue::Number(b)) => a == b,
+            (JsonValue::String(a), JsonValue::String(b)) => a == b,
+            (JsonValue::Array(a), JsonValue::Array(b)) => a == b,
+            (JsonValue::Object(a), JsonValue::Object(b)) => a == b,
+            (JsonValue::Function(a), JsonValue::Function(b)) => a.ptr_eq(b),
+            _ => false,
+        }
+    }
+}

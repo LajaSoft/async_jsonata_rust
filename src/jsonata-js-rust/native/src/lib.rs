@@ -1,9 +1,18 @@
+use futures::channel::oneshot;
+use futures::future::BoxFuture;
 use napi::bindgen_prelude::*;
-use napi::{CallContext, Env, JsObject, JsUnknown, ValueType};
+use napi::sys;
+use napi::threadsafe_function::{
+    ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
+};
+use napi::{CallContext, Env, JsFunction, JsObject, JsUnknown, Status, ValueType};
 use napi_derive::napi;
 
 use jsonata_rust::functions::{core as core_impl, math as math_impl, strings as strings_impl};
-use jsonata_rust::types::{JsonArray, JsonError, JsonObject, JsonValue};
+use jsonata_rust::types::{
+    FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction, JsonObject, JsonValue,
+};
+use std::sync::{Arc, Mutex};
 
 fn option_number_to_js(env: &Env, value: Option<f64>) -> napi::Result<JsUnknown> {
     match value {
@@ -162,6 +171,11 @@ fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Result<JsonVal
         ValueType::BigInt => Ok(JsonValue::String(
             value.coerce_to_string()?.into_utf8()?.as_str()?.to_owned(),
         )),
+        ValueType::Function => {
+            let js_func = JsFunction::from_unknown(value)?;
+            let callable = JsFunctionCallable::new(env, js_func)?;
+            Ok(JsonValue::Function(JsonFunction::new(Arc::new(callable))))
+        }
         ValueType::Object => {
             let object = value.coerce_to_object()?;
             if object.is_array()? {
@@ -263,6 +277,10 @@ fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUnknown> {
             }
             Ok(js_object.into_unknown())
         }
+        JsonValue::Function(_) => Err(Error::new(
+            Status::InvalidArg,
+            "Cannot convert function value to JavaScript yet",
+        )),
     }
 }
 
@@ -367,6 +385,42 @@ fn json_error_to_napi(err: JsonError) -> napi::Error {
         Status::GenericFailure,
         format!("{}: {}", err.code, err.message),
     )
+}
+
+fn napi_error_to_json(code: &'static str, err: napi::Error) -> JsonError {
+    JsonError::new(code, err.to_string())
+}
+
+type JsonCallResult = std::result::Result<JsonValue, JsonError>;
+
+struct SharedSender {
+    inner: Arc<Mutex<Option<oneshot::Sender<JsonCallResult>>>>,
+}
+
+impl Clone for SharedSender {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl SharedSender {
+    fn new(sender: oneshot::Sender<JsonCallResult>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Some(sender))),
+        }
+    }
+
+    fn take(&self) -> Option<oneshot::Sender<JsonCallResult>> {
+        self.inner.lock().ok().and_then(|mut guard| guard.take())
+    }
+
+    fn send(&self, result: JsonCallResult) {
+        if let Some(tx) = self.take() {
+            let _ = tx.send(result);
+        }
+    }
 }
 
 fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
@@ -616,4 +670,98 @@ pub fn load_functions(env: Env) -> napi::Result<JsObject> {
     register_strings(&env, &mut exports)?;
     register_unimplemented(&env, &mut exports)?;
     Ok(exports)
+}
+
+#[derive(Clone)]
+struct JsFunctionCallable {
+    tsfn: ThreadsafeFunction<Invocation>,
+    env_raw: sys::napi_env,
+}
+
+struct Invocation {
+    args: Vec<JsonValue>,
+    sender: SharedSender,
+}
+
+unsafe impl Send for JsFunctionCallable {}
+unsafe impl Sync for JsFunctionCallable {}
+
+impl JsFunctionCallable {
+    fn new(env: &Env, func: JsFunction) -> napi::Result<Self> {
+        let tsfn = env.create_threadsafe_function(
+            &func,
+            0,
+            move |ctx: ThreadSafeCallContext<Invocation>| {
+                let Invocation { args, sender } = ctx.value;
+                let mut converted: Vec<JsUnknown> = Vec::with_capacity(args.len());
+                for value in args {
+                    match json_value_to_js(&ctx.env, value) {
+                        Ok(js_value) => converted.push(js_value),
+                        Err(err) => {
+                            sender.send(Err(JsonError::new(
+                                "RUST",
+                                format!("Failed to convert argument for callback: {}", err),
+                            )));
+                            return Err(err);
+                        }
+                    }
+                }
+                Ok(converted)
+            },
+        )?;
+
+        Ok(Self {
+            tsfn,
+            env_raw: env.raw(),
+        })
+    }
+
+    fn env(&self) -> Env {
+        // SAFETY: env_raw is valid for the lifetime of the addon
+        unsafe { Env::from_raw(self.env_raw) }
+    }
+}
+
+impl JsonCallable for JsFunctionCallable {
+    fn call(
+        &self,
+        _ctx: FunctionContext,
+        args: Vec<JsonValue>,
+    ) -> BoxFuture<'static, JsonCallResult> {
+        let (sender, receiver) = oneshot::channel();
+        let shared_sender = SharedSender::new(sender);
+        let invocation = Invocation {
+            args,
+            sender: shared_sender.clone(),
+        };
+        let env = self.env();
+        let callback_sender = shared_sender.clone();
+        let status = self.tsfn.call_with_return_value::<JsUnknown, _>(
+            Ok(invocation),
+            ThreadsafeFunctionCallMode::NonBlocking,
+            move |value: JsUnknown| {
+                let result = js_unknown_to_json_value(&env, value)
+                    .map_err(|err| napi_error_to_json("RUST", err));
+                callback_sender.send(result);
+                Ok(())
+            },
+        );
+
+        if status != Status::Ok {
+            shared_sender.send(Err(JsonError::new(
+                "RUST",
+                format!("Failed to schedule callback: {status:?}"),
+            )));
+        }
+
+        Box::pin(async move {
+            match receiver.await {
+                Ok(result) => result,
+                Err(_) => Err(JsonError::new(
+                    "RUST",
+                    "Callback channel closed before completion",
+                )),
+            }
+        })
+    }
 }

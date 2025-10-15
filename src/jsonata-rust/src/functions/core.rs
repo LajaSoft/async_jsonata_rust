@@ -167,6 +167,7 @@ fn boolean_internal(value: &JsonValue) -> JsonValue {
             }
         },
         JsonValue::Object(JsonObject(props)) => JsonValue::Bool(!props.is_empty()),
+        JsonValue::Function(_) => JsonValue::Bool(true),
     }
 }
 

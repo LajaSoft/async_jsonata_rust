@@ -78,3 +78,10 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
 - Extend the N-API bridge with a unified callable wrapper that can represent JSONata callbacks as Rust-owned functions (sync and async), allowing the JS suite for user-defined functions to run natively again.
 - Re-enable the skipped user-defined-function tests once the wrapper lands to keep parity coverage for async evaluation paths.
 - Finish porting the remaining higher-order helpers in Rust (`$map`, `$each`, `$number`, partial application helpers) so the hybrid runtime can clear the dependent conformance groups.
+
+## Callback Bridging Design Notes
+- Introduce a `JsonValue::Function` variant backed by an `Arc<dyn JsonCallable>` so Rust helpers can accept and invoke callback arguments without inspecting their origin.
+- Define `JsonCallable` to return a boxed future that resolves to a `JsonValue`, allowing both synchronous values and promises/generators to be surfaced with the same API.
+- When converting from JS to Rust, capture function-like values (`_jsonata_function`, `_jsonata_lambda`, plain JS functions, and generators) by creating a `ThreadsafeFunction` wrapper that marshals arguments/results and preserves the JSONata `focus` object as the invocation `this`.
+- Extend the native bridge so every Rust entrypoint receives the `focus` handle (`ctx.this`) and can pass it through to callable wrappers, keeping environment-sensitive behaviour intact.
+- Normalise callback argument preparation (mirroring `hofFuncArgs`, arity checks, generator unrolling) inside the wrapper so higher-order Rust helpers (`$map`, `$filter`, `$single`, etc.) can treat callbacks as opaque `JsonCallable`.
