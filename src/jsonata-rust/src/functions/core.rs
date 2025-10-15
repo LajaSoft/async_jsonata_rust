@@ -1,7 +1,9 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
-use crate::types::{JsonArray, JsonError, JsonObject, JsonValue};
+use crate::types::{
+    FunctionContext, JsonArray, JsonError, JsonFunction, JsonObject, JsonValue,
+};
 
 fn clone_array_elements(array: &JsonArray) -> Vec<JsonValue> {
     array.elements.clone()
@@ -273,9 +275,192 @@ pub fn sort_default(array: &JsonValue) -> Result<JsonValue, JsonError> {
     )))
 }
 
+fn build_hof_args(
+    callable: &JsonFunction,
+    first: JsonValue,
+    second: Option<JsonValue>,
+    third: Option<JsonValue>,
+) -> Vec<JsonValue> {
+    let arity = callable.arity().unwrap_or(3).max(1);
+
+    let mut args = Vec::with_capacity(
+        1 + second.as_ref().map(|_| 1).unwrap_or_default()
+            + third.as_ref().map(|_| 1).unwrap_or_default(),
+    );
+
+    args.push(first);
+
+    if arity >= 2 {
+        if let Some(value) = second {
+            args.push(value);
+        }
+    }
+
+    if arity >= 3 {
+        if let Some(value) = third {
+            args.push(value);
+        }
+    }
+
+    args
+}
+
+pub async fn map(
+    ctx: FunctionContext,
+    array: JsonValue,
+    func: JsonValue,
+) -> Result<JsonValue, JsonError> {
+    let (arr, container) = match array {
+        JsonValue::Undefined => return Ok(JsonValue::Undefined),
+        JsonValue::Array(arr) => {
+            let container = JsonValue::Array(arr.clone());
+            (arr, container)
+        }
+        _ => {
+            return Err(JsonError::new(
+                "D3050",
+                "$map() expects the first argument to be an array",
+            ))
+        }
+    };
+
+    let callable = match func {
+        JsonValue::Function(func) => func,
+        _ => {
+            return Err(JsonError::new(
+                "D3050",
+                "$map() expects the second argument to be a function",
+            ))
+        }
+    };
+
+    let mut results = Vec::with_capacity(arr.elements.len());
+
+    for (index, element) in arr.elements.iter().enumerate() {
+        let args = build_hof_args(
+            &callable,
+            element.clone(),
+            Some(JsonValue::Number(index as f64)),
+            Some(container.clone()),
+        );
+
+        let value = callable.call(ctx.clone(), args).await?;
+        if !value.is_undefined() {
+            results.push(value);
+        }
+    }
+
+    Ok(JsonValue::Array(JsonArray::new(results, true, false)))
+}
+
+pub async fn each(
+    ctx: FunctionContext,
+    input: JsonValue,
+    func: JsonValue,
+) -> Result<JsonValue, JsonError> {
+    let callable = match func {
+        JsonValue::Function(func) => func,
+        _ => {
+            return Err(JsonError::new(
+                "D3050",
+                "$each() expects the second argument to be a function",
+            ))
+        }
+    };
+
+    let mut results: Vec<JsonValue> = Vec::new();
+
+    match input {
+        JsonValue::Undefined => return Ok(JsonValue::Undefined),
+        JsonValue::Object(object) => {
+            let container = JsonValue::Object(object.clone());
+            for (key, value) in object.0.iter() {
+                let args = build_hof_args(
+                    &callable,
+                    value.clone(),
+                    Some(JsonValue::String(key.clone())),
+                    Some(container.clone()),
+                );
+                let result = callable.call(ctx.clone(), args).await?;
+                if !result.is_undefined() {
+                    results.push(result);
+                }
+            }
+        }
+        JsonValue::Array(array) => {
+            let container = JsonValue::Array(array.clone());
+            for (index, value) in array.elements.iter().enumerate() {
+                let args = build_hof_args(
+                    &callable,
+                    value.clone(),
+                    Some(JsonValue::String(index.to_string())),
+                    Some(container.clone()),
+                );
+                let result = callable.call(ctx.clone(), args).await?;
+                if !result.is_undefined() {
+                    results.push(result);
+                }
+            }
+        }
+        _ => {
+            return Err(JsonError::new(
+                "D3050",
+                "$each() expects the first argument to be an object or array",
+            ))
+        }
+    }
+
+    Ok(JsonValue::Array(JsonArray::new(results, true, false)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::executor::block_on;
+    use futures::future::BoxFuture;
+    use crate::types::JsonCallable;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct RecordingCallable {
+        arity: usize,
+        calls: Arc<Mutex<Vec<Vec<JsonValue>>>>,
+    }
+
+    impl RecordingCallable {
+        fn new(arity: usize) -> Self {
+            Self {
+                arity,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn calls(&self) -> Arc<Mutex<Vec<Vec<JsonValue>>>> {
+            Arc::clone(&self.calls)
+        }
+    }
+
+    impl JsonCallable for RecordingCallable {
+        fn call(
+            &self,
+            _ctx: FunctionContext,
+            args: Vec<JsonValue>,
+        ) -> BoxFuture<'static, Result<JsonValue, JsonError>> {
+            let captured = args.clone();
+            let output = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let store = self.calls();
+            Box::pin(async move {
+                if let Ok(mut guard) = store.lock() {
+                    guard.push(captured);
+                }
+                Ok(output)
+            })
+        }
+
+        fn arity(&self) -> Option<usize> {
+            Some(self.arity)
+        }
+    }
 
     #[test]
     fn boolean_handles_primitives() {
@@ -414,5 +599,95 @@ mod tests {
             false,
         );
         assert!(sort_default(&JsonValue::Array(arr)).is_err());
+    }
+
+    #[test]
+    fn map_applies_callable_respecting_arity() {
+        let callable = RecordingCallable::new(2);
+        let function = JsonFunction::new(Arc::new(callable.clone()));
+        let array = JsonArray::new(
+            vec![JsonValue::Number(1.0), JsonValue::Number(2.0)],
+            true,
+            false,
+        );
+        let result = block_on(map(
+            FunctionContext::empty(),
+            JsonValue::Array(array),
+            JsonValue::Function(function),
+        ))
+        .expect("map should succeed");
+
+        match result {
+            JsonValue::Array(JsonArray { elements, .. }) => {
+                assert_eq!(elements.len(), 2);
+            }
+            other => panic!("Expected array, got {:?}", other),
+        }
+
+        let calls = callable.calls();
+        let stored = calls.lock().unwrap();
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0].len(), 2);
+        assert!(matches!(stored[0][1], JsonValue::Number(0.0)));
+        assert!(matches!(stored[1][1], JsonValue::Number(1.0)));
+    }
+
+    #[test]
+    fn each_iterates_objects_and_arrays() {
+        let callable = RecordingCallable::new(3);
+        let function = JsonFunction::new(Arc::new(callable.clone()));
+        let object = JsonObject(vec![
+            ("a".to_string(), JsonValue::Number(10.0)),
+            ("b".to_string(), JsonValue::Number(20.0)),
+        ]);
+
+        let object_result = block_on(each(
+            FunctionContext::empty(),
+            JsonValue::Object(object.clone()),
+            JsonValue::Function(function.clone()),
+        ))
+        .expect("each should succeed for objects");
+
+        match object_result {
+            JsonValue::Array(JsonArray { elements, .. }) => {
+                assert_eq!(elements.len(), 2);
+            }
+            other => panic!("Expected array from object iteration, got {:?}", other),
+        }
+
+        let array = JsonArray::new(
+            vec![
+                JsonValue::String("x".into()),
+                JsonValue::String("y".into()),
+            ],
+            true,
+            false,
+        );
+
+        let array_result = block_on(each(
+            FunctionContext::empty(),
+            JsonValue::Array(array),
+            JsonValue::Function(function),
+        ))
+        .expect("each should succeed for arrays");
+
+        match array_result {
+            JsonValue::Array(JsonArray { elements, .. }) => {
+                assert_eq!(elements.len(), 2);
+            }
+            other => panic!("Expected array from array iteration, got {:?}", other),
+        }
+
+        let calls = callable.calls();
+        let stored = calls.lock().unwrap();
+        assert_eq!(stored.len(), 4);
+        assert!(matches!(
+            stored[0][1],
+            JsonValue::String(ref key) if key == "a"
+        ));
+        assert!(matches!(
+            stored[2][1],
+            JsonValue::String(ref key) if key == "0"
+        ));
     }
 }

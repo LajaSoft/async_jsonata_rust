@@ -73,6 +73,102 @@ pub fn random() -> f64 {
     rng.gen::<f64>()
 }
 
+fn parse_radix_string(text: &str) -> Option<f64> {
+    if text.len() <= 2 {
+        return None;
+    }
+    let (radix, digits) = if let Some(rest) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        (16, rest)
+    } else if let Some(rest) = text.strip_prefix("0o").or_else(|| text.strip_prefix("0O")) {
+        (8, rest)
+    } else if let Some(rest) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+        (2, rest)
+    } else {
+        return None;
+    };
+
+    if digits.is_empty() {
+        return None;
+    }
+
+    u64::from_str_radix(digits, radix).ok().map(|value| value as f64)
+}
+
+fn matches_decimal_pattern(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+
+    let mut index = 0;
+    if bytes[index] == b'-' {
+        index += 1;
+    }
+
+    let start_digits = index;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        index += 1;
+    }
+    if index == start_digits {
+        return false;
+    }
+
+    if index < bytes.len() && bytes[index] == b'.' {
+        index += 1;
+        let fraction_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index == fraction_start {
+            return false;
+        }
+    }
+
+    if index < bytes.len() && (bytes[index] == b'e' || bytes[index] == b'E') {
+        index += 1;
+        if index < bytes.len() && (bytes[index] == b'+' || bytes[index] == b'-') {
+            index += 1;
+        }
+        let exponent_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index == exponent_start {
+            return false;
+        }
+    }
+
+    index == bytes.len()
+}
+
+pub fn number(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    match value {
+        JsonValue::Undefined => Ok(JsonValue::Undefined),
+        JsonValue::Number(num) => Ok(JsonValue::Number(*num)),
+        JsonValue::String(text) => {
+            if let Some(parsed) = parse_radix_string(text).or_else(|| {
+                if matches_decimal_pattern(text) {
+                    text.parse::<f64>().ok()
+                } else {
+                    None
+                }
+            }) {
+                Ok(JsonValue::Number(parsed))
+            } else {
+                Err(JsonError::new(
+                    "D3030",
+                    format!("Unable to cast '{}' to a number", text),
+                ))
+            }
+        }
+        JsonValue::Bool(flag) => Ok(JsonValue::Number(if *flag { 1.0 } else { 0.0 })),
+        _ => Err(JsonError::new(
+            "D3030",
+            "Unable to cast value to a number",
+        )),
+    }
+}
+
 pub fn abs(value: Option<f64>) -> Option<f64> {
     value.map(|v| v.abs())
 }
@@ -160,6 +256,7 @@ pub fn count_value(value: &JsonValue) -> JsonValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::JsonObject;
 
     #[test]
     fn sum_handles_none() {
@@ -236,7 +333,33 @@ mod tests {
     #[test]
     fn power_detects_non_finite_results() {
         assert!(power(Some(0.0), Some(-1.0)).is_err());
-        assert_eq!(power(Some(2.0), Some(3.0)).unwrap(), Some(8.0));
+       assert_eq!(power(Some(2.0), Some(3.0)).unwrap(), Some(8.0));
+    }
+
+    #[test]
+    fn number_parses_strings_and_radix() {
+        assert_eq!(
+            number(&JsonValue::String("42".to_owned())).unwrap(),
+            JsonValue::Number(42.0)
+        );
+        assert_eq!(
+            number(&JsonValue::String("-3.14".to_owned())).unwrap(),
+            JsonValue::Number(-3.14)
+        );
+        assert_eq!(
+            number(&JsonValue::String("0x10".to_owned())).unwrap(),
+            JsonValue::Number(16.0)
+        );
+        assert_eq!(
+            number(&JsonValue::Bool(true)).unwrap(),
+            JsonValue::Number(1.0)
+        );
+    }
+
+    #[test]
+    fn number_rejects_invalid_values() {
+        assert!(number(&JsonValue::String("12abc".to_owned())).is_err());
+        assert!(number(&JsonValue::Object(JsonObject(vec![]))).is_err());
     }
 
     #[test]

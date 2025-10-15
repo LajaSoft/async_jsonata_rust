@@ -3,3 +3,4 @@ src/jsonata-rust/target/
 .home/
 .cargo/
 .corepack/
+tmp/

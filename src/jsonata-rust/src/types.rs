@@ -83,6 +83,10 @@ impl JsonFunction {
         self.callable.call(ctx, args)
     }
 
+    pub fn arity(&self) -> Option<usize> {
+        self.callable.arity()
+    }
+
     pub fn ptr_eq(&self, other: &JsonFunction) -> bool {
         Arc::ptr_eq(&self.callable, &other.callable)
     }
@@ -98,14 +102,28 @@ impl fmt::Debug for JsonFunction {
 
 pub type CallbackHandle = Arc<dyn Any + Send + Sync>;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct JsonataFocus {
     pub input: JsonValue,
+    pub handle: Option<CallbackHandle>,
 }
 
 impl JsonataFocus {
     pub fn new(input: JsonValue) -> Self {
-        Self { input }
+        Self {
+            input,
+            handle: None,
+        }
+    }
+
+    pub fn with_handle(input: JsonValue, handle: Option<CallbackHandle>) -> Self {
+        Self { input, handle }
+    }
+}
+
+impl PartialEq for JsonataFocus {
+    fn eq(&self, other: &Self) -> bool {
+        self.input == other.input
     }
 }
 
@@ -136,6 +154,10 @@ pub trait JsonCallable: Send + Sync {
         ctx: FunctionContext,
         args: Vec<JsonValue>,
     ) -> BoxFuture<'static, Result<JsonValue, JsonError>>;
+
+    fn arity(&self) -> Option<usize> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
