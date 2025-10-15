@@ -119,6 +119,19 @@ pub fn exists(value: &JsonValue) -> JsonValue {
     JsonValue::Bool(!value.is_undefined())
 }
 
+pub fn type_of(value: &JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Undefined => JsonValue::Undefined,
+        JsonValue::Null => JsonValue::String("null".to_owned()),
+        JsonValue::Bool(_) => JsonValue::String("boolean".to_owned()),
+        JsonValue::Number(_) => JsonValue::String("number".to_owned()),
+        JsonValue::String(_) => JsonValue::String("string".to_owned()),
+        JsonValue::Array(_) => JsonValue::String("array".to_owned()),
+        JsonValue::Object(_) => JsonValue::String("object".to_owned()),
+        JsonValue::Function(_) => JsonValue::String("function".to_owned()),
+    }
+}
+
 pub fn keys(value: &JsonValue) -> JsonValue {
     match value {
         JsonValue::Undefined => JsonValue::Array(JsonArray::empty_sequence()),
@@ -537,6 +550,39 @@ mod tests {
             JsonValue::Number(1.0),
         )]));
         assert_eq!(boolean(&non_empty), JsonValue::Bool(true));
+    }
+
+    #[test]
+    fn type_of_reports_expected_tags() {
+        assert_eq!(type_of(&JsonValue::Undefined), JsonValue::Undefined);
+        assert_eq!(type_of(&JsonValue::Null), JsonValue::String("null".to_owned()));
+        assert_eq!(
+            type_of(&JsonValue::Bool(true)),
+            JsonValue::String("boolean".to_owned())
+        );
+        assert_eq!(
+            type_of(&JsonValue::Number(0.0)),
+            JsonValue::String("number".to_owned())
+        );
+        assert_eq!(
+            type_of(&JsonValue::String("value".to_owned())),
+            JsonValue::String("string".to_owned())
+        );
+        assert_eq!(
+            type_of(&JsonValue::Array(JsonArray::empty_sequence())),
+            JsonValue::String("array".to_owned())
+        );
+        assert_eq!(
+            type_of(&JsonValue::Object(JsonObject(Vec::new()))),
+            JsonValue::String("object".to_owned())
+        );
+
+        let callable = RecordingCallable::new(0);
+        let function_value = JsonValue::Function(JsonFunction::new(Arc::new(callable)));
+        assert_eq!(
+            type_of(&function_value),
+            JsonValue::String("function".to_owned())
+        );
     }
 
     #[test]

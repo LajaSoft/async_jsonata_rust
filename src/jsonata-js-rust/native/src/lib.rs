@@ -717,6 +717,13 @@ fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("boolean", boolean_fn)?;
 
+    let type_fn = env.create_function_from_closure::<(), sys::napi_value, _>("type", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        let result = core_impl::type_of(&value);
+        map_unknown(json_value_to_js(ctx.env, result))
+    })?;
+    exports.set_named_property("type", type_fn)?;
+
     let not_fn = env.create_function_from_closure::<(), sys::napi_value, _>("not", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         let result = core_impl::not(&value);
@@ -928,8 +935,6 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
 
 fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     const UNIMPLEMENTED: &[&str] = &[
-        "formatNumber",
-        "formatBase",
         "filter",
         "single",
         "foldLeft",
@@ -939,7 +944,6 @@ fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()>
         "reverse",
         "error",
         "assert",
-        "type",
         "shuffle",
         "distinct",
         "base64encode",
