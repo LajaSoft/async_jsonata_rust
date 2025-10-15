@@ -198,6 +198,94 @@ fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUnknown> {
     }
 }
 
+fn property_flag_is_truthy(object: &JsObject, name: &str) -> napi::Result<bool> {
+    if !object.has_named_property(name)? {
+        return Ok(false);
+    }
+    let flag: JsUnknown = object.get_named_property(name)?;
+    match flag.get_type()? {
+        ValueType::Undefined | ValueType::Null => Ok(false),
+        ValueType::Boolean => flag.coerce_to_bool()?.get_value(),
+        ValueType::Number => Ok(flag.coerce_to_number()?.get_double()? != 0.0),
+        ValueType::String => {
+            let text = flag.coerce_to_string()?.into_utf8()?.as_str()?.to_owned();
+            Ok(!text.is_empty() && text != "false" && text != "0")
+        }
+        _ => Ok(true),
+    }
+}
+
+fn is_jsonata_function_object(object: &JsObject) -> napi::Result<bool> {
+    if property_flag_is_truthy(object, "_jsonata_function")? {
+        return Ok(true);
+    }
+    if property_flag_is_truthy(object, "_jsonata_lambda")? {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn create_sequence_array(env: &Env, elements: Vec<JsUnknown>) -> napi::Result<JsUnknown> {
+    let mut js_array: JsObject = env.create_array_with_length(elements.len())?;
+    for (index, element) in elements.into_iter().enumerate() {
+        js_array.set_element(index as u32, element)?;
+    }
+    let flag = env.get_boolean(true)?;
+    js_array.set_named_property("sequence", flag)?;
+    Ok(js_array.into_unknown())
+}
+
+fn lookup_js(env: &Env, value: JsUnknown, key: &str) -> napi::Result<Option<JsUnknown>> {
+    match value.get_type()? {
+        ValueType::Undefined | ValueType::Null => Ok(None),
+        ValueType::Function => Ok(None),
+        ValueType::Object => {
+            let object = value.coerce_to_object()?;
+            if object.is_array()? {
+                let length = object.get_array_length()?;
+                let mut aggregated: Vec<JsUnknown> = Vec::new();
+                for index in 0..length {
+                    let element: JsUnknown = object.get_element(index)?;
+                    if let Some(resolved) = lookup_js(env, element, key)? {
+                        match resolved.get_type()? {
+                            ValueType::Undefined | ValueType::Null => {}
+                            ValueType::Object => {
+                                let resolved_object = resolved.coerce_to_object()?;
+                                if resolved_object.is_array()? {
+                                    let inner_length = resolved_object.get_array_length()?;
+                                    for inner_index in 0..inner_length {
+                                        let inner_value: JsUnknown =
+                                            resolved_object.get_element(inner_index)?;
+                                        aggregated.push(inner_value);
+                                    }
+                                } else {
+                                    aggregated.push(resolved_object.into_unknown());
+                                }
+                            }
+                            _ => aggregated.push(resolved),
+                        }
+                    }
+                }
+                let sequence = create_sequence_array(env, aggregated)?;
+                Ok(Some(sequence))
+            } else {
+                if is_jsonata_function_object(&object)? {
+                    return Ok(None);
+                }
+                if object.has_named_property(key)? {
+                    let property: JsUnknown = object.get_named_property(key)?;
+                    if matches!(property.get_type()?, ValueType::Undefined) {
+                        return Ok(None);
+                    }
+                    return Ok(Some(property));
+                }
+                Ok(None)
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
 fn arg_to_json_value(ctx: &CallContext, index: usize) -> napi::Result<JsonValue> {
     if index >= ctx.length {
         return Ok(JsonValue::Undefined);
@@ -218,10 +306,13 @@ fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
         if ctx.length < 2 {
             return ctx.env.get_undefined().map(|v| v.into_unknown());
         }
-        let input = arg_to_json_value(&ctx, 0)?;
         let key: String = ctx.get(1)?;
-        let result = core_impl::lookup(&input, &key);
-        json_value_to_js(ctx.env, result)
+        let input: JsUnknown = ctx.get(0)?;
+        if let Some(value) = lookup_js(ctx.env, input, &key)? {
+            Ok(value)
+        } else {
+            ctx.env.get_undefined().map(|v| v.into_unknown())
+        }
     })?;
     exports.set_named_property("lookup", lookup)?;
 

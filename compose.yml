@@ -9,4 +9,7 @@ services:
     stdin_open: true
     tty: true
     environment:
+      - COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+      - COREPACK_HOME=/workspace/.corepack
+      - HOME=/workspace/.home
       - PATH=/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

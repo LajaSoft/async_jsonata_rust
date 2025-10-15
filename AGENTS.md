@@ -16,6 +16,14 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
 - **Dual runtime:** Maintain a hybrid JS/Rust runtime so that we can progressively swap components without breaking the public Node.js API.
 - **Observability:** Record benchmarks and compliance deltas at each replacement stage.
 - **Regression guards:** Add Rust-side unit/property tests mirroring any upstream scenario that previously failed.
+- **User first:** If user interrupted work and ask to do something different than you think is best - count it with priority, because probably user spotted some wrong behavior and want align current run.
+
+## Execution Rules
+- **Container-only automation:** Run builds, tests, and tooling exclusively through Docker Compose (`docker compose run --rm dev …`). Host-level execution of the toolchain is off-limits.
+- **Source layout contract:** Treat `src/jsonata/` as upstream-read-only, implement Rust-native logic in `src/jsonata-rust/`, and maintain hybrid glue plus JavaScript-facing tweaks under `src/jsonata-js-rust/`.
+- **Hybrid runtime flexibility:** Modify `src/jsonata-js-rust/` as needed to integrate Rust shims, adjust harness scripts, or skip/guard tests (for example, external HTTP probes) while documenting deviations from the upstream suite.
+- **Docker config location:** When invoking tooling inside the container ensure `DOCKER_CONFIG` points at `/workspace/.docker` (host path `${REPO_ROOT}/.docker`) so Docker and Buildx reuse the mounted credentials/cache.
+- **Container command conventions:** The dev container mounts the repo at `/workspace` but Node tooling lives under `src/jsonata-js-rust`; always set `--workdir /workspace/src/jsonata-js-rust` (or `bash -lc "cd /workspace/src/jsonata-js-rust && …"`) when running package scripts so `pnpm` can find `package.json`.
 
 ## Workflow Phases
 1. **Bootstrap**
@@ -23,7 +31,7 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
    - Mirror the upstream tree into `src/jsonata-js-rust` where patches can be applied to call Rust shims without breaking layout.
    - Scaffold the Rust crate inside `src/jsonata-rust` exposing a C-compatible surface callable from Node via `napi-rs` (preferred) or `neon` fallback.
    - Build the dev container (`docker compose build`) to obtain a reproducible Node+Rust toolchain.
-   - Baseline by running the upstream JS test suite unchanged inside the container (`docker compose run --rm dev pnpm test`).
+   - Baseline by running the upstream JS test suite unchanged inside the container (`docker compose run --rm --workdir /workspace/src/jsonata-js-rust dev pnpm test`).
    - Introduce the hybrid bridge in `src/jsonata-js-rust/native` and replace `functions.js` with a Rust-provided registry (non-port sections currently throw `not implemented`).
 2. **Atomics Layer**
    - Identify the smallest pure functions (numbers, strings, time, comparators, math ops).

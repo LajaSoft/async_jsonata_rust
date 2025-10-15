@@ -1,2 +1,4 @@
 src/jsonata-rust/target/
-
+.corepack/
+.home/
+.corepack/
