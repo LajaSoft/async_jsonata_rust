@@ -619,11 +619,7 @@ mod tests {
 
     #[test]
     fn string_single_element_array_preserves_brackets() {
-        let array = JsonValue::Array(JsonArray::new(
-            vec![JsonValue::Number(2.0)],
-            false,
-            false,
-        ));
+        let array = JsonValue::Array(JsonArray::new(vec![JsonValue::Number(2.0)], false, false));
         let result = string(&array, false).unwrap();
         assert!(matches!(result, JsonValue::String(ref s) if s == "[2]"));
     }

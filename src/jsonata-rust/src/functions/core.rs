@@ -1,6 +1,11 @@
+use std::cmp::Ordering;
 use std::collections::HashSet;
 
-use crate::types::{JsonArray, JsonObject, JsonValue};
+use crate::types::{JsonArray, JsonError, JsonObject, JsonValue};
+
+fn clone_array_elements(array: &JsonArray) -> Vec<JsonValue> {
+    array.elements.clone()
+}
 
 pub fn lookup(input: &JsonValue, key: &str) -> JsonValue {
     match input {
@@ -56,6 +61,54 @@ pub fn append(left: &JsonValue, right: &JsonValue) -> JsonValue {
     }
 
     JsonValue::Array(JsonArray::new(combined, false, false))
+}
+
+fn coerce_zip_sequence(value: &JsonValue) -> Vec<JsonValue> {
+    match value {
+        JsonValue::Undefined => Vec::new(),
+        JsonValue::Array(array) => {
+            if array.outer_wrapper && !array.is_sequence {
+                vec![JsonValue::Array(JsonArray::new(
+                    array.elements.clone(),
+                    array.is_sequence,
+                    array.outer_wrapper,
+                ))]
+            } else {
+                clone_array_elements(array)
+            }
+        }
+        other => vec![other.clone()],
+    }
+}
+
+pub fn zip(args: &[JsonValue]) -> JsonValue {
+    if args.is_empty() {
+        return JsonValue::Array(JsonArray::new(Vec::new(), false, false));
+    }
+
+    let mut sequences: Vec<Vec<JsonValue>> = Vec::with_capacity(args.len());
+    let mut min_len = usize::MAX;
+
+    for arg in args {
+        let entries = coerce_zip_sequence(arg);
+        min_len = min_len.min(entries.len());
+        sequences.push(entries);
+    }
+
+    if min_len == usize::MAX {
+        min_len = 0;
+    }
+
+    let mut zipped: Vec<JsonValue> = Vec::with_capacity(min_len);
+    for index in 0..min_len {
+        let mut tuple: Vec<JsonValue> = Vec::with_capacity(sequences.len());
+        for sequence in sequences.iter() {
+            tuple.push(sequence[index].clone());
+        }
+        zipped.push(JsonValue::Array(JsonArray::new(tuple, false, false)));
+    }
+
+    JsonValue::Array(JsonArray::new(zipped, false, false))
 }
 
 pub fn exists(value: &JsonValue) -> JsonValue {
@@ -129,6 +182,96 @@ pub fn not(value: &JsonValue) -> JsonValue {
     }
 }
 
+fn ensure_homogeneous_sort_elements(elements: &[JsonValue]) -> Result<SortDomain, JsonError> {
+    let mut has_numbers = false;
+    let mut has_strings = false;
+
+    for element in elements {
+        match element {
+            JsonValue::Number(_) => has_numbers = true,
+            JsonValue::String(_) => has_strings = true,
+            JsonValue::Undefined => {
+                return Err(JsonError::new(
+                    "D3070",
+                    "Sort expects an array of numbers or strings",
+                ))
+            }
+            _ => {
+                return Err(JsonError::new(
+                    "D3070",
+                    "Sort expects an array of numbers or strings",
+                ))
+            }
+        }
+        if has_numbers && has_strings {
+            return Err(JsonError::new(
+                "D3070",
+                "Sort expects an array of numbers or strings",
+            ));
+        }
+    }
+
+    if has_numbers {
+        Ok(SortDomain::Numbers)
+    } else if has_strings {
+        Ok(SortDomain::Strings)
+    } else {
+        Ok(SortDomain::Empty)
+    }
+}
+
+enum SortDomain {
+    Numbers,
+    Strings,
+    Empty,
+}
+
+pub fn sort_default(array: &JsonValue) -> Result<JsonValue, JsonError> {
+    let input_array = match array {
+        JsonValue::Undefined => return Ok(JsonValue::Undefined),
+        JsonValue::Array(arr) => arr,
+        _ => {
+            return Err(JsonError::new(
+                "D3070",
+                "Sort expects an array as the first argument",
+            ))
+        }
+    };
+
+    if input_array.elements.len() <= 1 {
+        return Ok(JsonValue::Array(JsonArray::new(
+            input_array.elements.clone(),
+            input_array.is_sequence,
+            input_array.outer_wrapper,
+        )));
+    }
+
+    let mut elements = input_array.elements.clone();
+    match ensure_homogeneous_sort_elements(&elements)? {
+        SortDomain::Numbers => {
+            elements.sort_by(|left, right| match (left, right) {
+                (JsonValue::Number(a), JsonValue::Number(b)) => {
+                    a.partial_cmp(b).unwrap_or(Ordering::Equal)
+                }
+                _ => Ordering::Equal,
+            });
+        }
+        SortDomain::Strings => {
+            elements.sort_by(|left, right| match (left, right) {
+                (JsonValue::String(a), JsonValue::String(b)) => a.cmp(b),
+                _ => Ordering::Equal,
+            });
+        }
+        SortDomain::Empty => {}
+    }
+
+    Ok(JsonValue::Array(JsonArray::new(
+        elements,
+        input_array.is_sequence,
+        input_array.outer_wrapper,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +333,85 @@ mod tests {
 
         let undefined = JsonValue::Undefined;
         assert_eq!(not(&undefined), JsonValue::Undefined);
+    }
+
+    #[test]
+    fn zip_combines_arrays_by_index() {
+        let left = JsonValue::Array(JsonArray::new(
+            vec![
+                JsonValue::Number(1.0),
+                JsonValue::Number(2.0),
+                JsonValue::Number(3.0),
+            ],
+            true,
+            false,
+        ));
+        let right = JsonValue::Array(JsonArray::new(
+            vec![
+                JsonValue::Number(4.0),
+                JsonValue::Number(5.0),
+                JsonValue::Number(6.0),
+            ],
+            true,
+            false,
+        ));
+
+        let result = zip(&[left, right]);
+        if let JsonValue::Array(JsonArray { elements, .. }) = result {
+            assert_eq!(elements.len(), 3);
+            assert!(matches!(elements[0], JsonValue::Array(_)));
+        } else {
+            panic!("Expected array result from zip");
+        }
+    }
+
+    #[test]
+    fn zip_handles_scalars() {
+        let result = zip(&[
+            JsonValue::Number(1.0),
+            JsonValue::Number(2.0),
+            JsonValue::Number(3.0),
+        ]);
+        if let JsonValue::Array(JsonArray { elements, .. }) = result {
+            assert_eq!(elements.len(), 1);
+        } else {
+            panic!("Expected array result from zip");
+        }
+    }
+
+    #[test]
+    fn sort_default_orders_numbers() {
+        let arr = JsonArray::new(
+            vec![
+                JsonValue::Number(3.0),
+                JsonValue::Number(1.0),
+                JsonValue::Number(2.0),
+            ],
+            true,
+            false,
+        );
+        let sorted = sort_default(&JsonValue::Array(arr)).expect("sort should succeed");
+        if let JsonValue::Array(JsonArray { elements, .. }) = sorted {
+            let values: Vec<f64> = elements
+                .into_iter()
+                .map(|v| match v {
+                    JsonValue::Number(n) => n,
+                    _ => panic!("Expected number"),
+                })
+                .collect();
+            assert_eq!(values, vec![1.0, 2.0, 3.0]);
+        } else {
+            panic!("Expected array result from sort");
+        }
+    }
+
+    #[test]
+    fn sort_default_rejects_mixed_types() {
+        let arr = JsonArray::new(
+            vec![JsonValue::Number(1.0), JsonValue::String("a".into())],
+            true,
+            false,
+        );
+        assert!(sort_default(&JsonValue::Array(arr)).is_err());
     }
 }

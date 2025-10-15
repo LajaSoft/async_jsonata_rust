@@ -399,6 +399,16 @@ fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("exists", exists)?;
 
+    let zip_fn = env.create_function_from_closure("zip", |ctx| {
+        let mut values: Vec<JsonValue> = Vec::with_capacity(ctx.length);
+        for index in 0..ctx.length {
+            values.push(arg_to_json_value(&ctx, index)?);
+        }
+        let result = core_impl::zip(&values);
+        json_value_to_js(ctx.env, result)
+    })?;
+    exports.set_named_property("zip", zip_fn)?;
+
     let keys = env.create_function_from_closure("keys", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         let result = core_impl::keys(&value);
@@ -419,6 +429,33 @@ fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
         json_value_to_js(ctx.env, result)
     })?;
     exports.set_named_property("not", not_fn)?;
+
+    let sort_fn = env.create_function_from_closure("sort", |ctx| {
+        let array = arg_to_json_value(&ctx, 0)?;
+        if ctx.length > 1 {
+            let comparator: JsUnknown = ctx.get(1)?;
+            match comparator.get_type()? {
+                ValueType::Undefined | ValueType::Null => {}
+                ValueType::Function => {
+                    return Err(Error::new(
+                        Status::GenericFailure,
+                        "Rust sort does not yet support comparator functions",
+                    ));
+                }
+                _ => {
+                    return Err(Error::new(
+                        Status::GenericFailure,
+                        "Comparator must be a function",
+                    ));
+                }
+            }
+        }
+        match core_impl::sort_default(&array) {
+            Ok(result) => json_value_to_js(ctx.env, result),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+    exports.set_named_property("sort", sort_fn)?;
 
     Ok(())
 }
@@ -539,7 +576,6 @@ fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()>
         "formatBase",
         "number",
         "map",
-        "zip",
         "filter",
         "single",
         "foldLeft",
@@ -551,7 +587,6 @@ fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()>
         "error",
         "assert",
         "type",
-        "sort",
         "shuffle",
         "distinct",
         "base64encode",
