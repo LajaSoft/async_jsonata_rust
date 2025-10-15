@@ -98,22 +98,35 @@ impl fmt::Debug for JsonFunction {
 
 pub type CallbackHandle = Arc<dyn Any + Send + Sync>;
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct JsonataFocus {
+    pub input: JsonValue,
+}
+
+impl JsonataFocus {
+    pub fn new(input: JsonValue) -> Self {
+        Self { input }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct FunctionContext {
-    pub this: Option<CallbackHandle>,
+    pub focus: Option<Arc<JsonataFocus>>,
 }
 
 impl FunctionContext {
-    pub fn new(this: Option<CallbackHandle>) -> Self {
-        Self { this }
-    }
-
     pub fn empty() -> Self {
-        Self { this: None }
+        Self { focus: None }
     }
 
-    pub fn with_this(this: CallbackHandle) -> Self {
-        Self { this: Some(this) }
+    pub fn with_focus(focus: JsonataFocus) -> Self {
+        Self {
+            focus: Some(Arc::new(focus)),
+        }
+    }
+
+    pub fn focus(&self) -> Option<Arc<JsonataFocus>> {
+        self.focus.clone()
     }
 }
 

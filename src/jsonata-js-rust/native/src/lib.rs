@@ -11,6 +11,7 @@ use napi_derive::napi;
 use jsonata_rust::functions::{core as core_impl, math as math_impl, strings as strings_impl};
 use jsonata_rust::types::{
     FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction, JsonObject, JsonValue,
+    JsonataFocus,
 };
 use std::sync::{Arc, Mutex};
 
@@ -681,6 +682,8 @@ struct JsFunctionCallable {
 struct Invocation {
     args: Vec<JsonValue>,
     sender: SharedSender,
+    #[allow(dead_code)]
+    focus: Option<Arc<JsonataFocus>>,
 }
 
 unsafe impl Send for JsFunctionCallable {}
@@ -692,7 +695,11 @@ impl JsFunctionCallable {
             &func,
             0,
             move |ctx: ThreadSafeCallContext<Invocation>| {
-                let Invocation { args, sender } = ctx.value;
+                let Invocation {
+                    args,
+                    sender,
+                    focus: _,
+                } = ctx.value;
                 let mut converted: Vec<JsUnknown> = Vec::with_capacity(args.len());
                 for value in args {
                     match json_value_to_js(&ctx.env, value) {
@@ -725,7 +732,7 @@ impl JsFunctionCallable {
 impl JsonCallable for JsFunctionCallable {
     fn call(
         &self,
-        _ctx: FunctionContext,
+        ctx: FunctionContext,
         args: Vec<JsonValue>,
     ) -> BoxFuture<'static, JsonCallResult> {
         let (sender, receiver) = oneshot::channel();
@@ -733,6 +740,7 @@ impl JsonCallable for JsFunctionCallable {
         let invocation = Invocation {
             args,
             sender: shared_sender.clone(),
+            focus: ctx.focus(),
         };
         let env = self.env();
         let callback_sender = shared_sender.clone();
@@ -827,6 +835,7 @@ fn attach_promise_handlers(
 
     let resolve_unknown = resolve.into_unknown();
     let reject_unknown = reject.into_unknown();
+
     let then_fn: JsFunction = promise_object.get_named_property("then")?;
     then_fn.call(Some(&promise_object), &[resolve_unknown, reject_unknown])?;
 
