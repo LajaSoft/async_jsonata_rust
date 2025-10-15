@@ -4,6 +4,35 @@ use std::fmt;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct JsonataArray {
+    pub elements: Vec<JsonataValue>,
+    pub is_sequence: bool,
+    pub outer_wrapper: bool,
+}
+
+impl JsonataArray {
+    pub fn new(elements: Vec<JsonataValue>, is_sequence: bool, outer_wrapper: bool) -> Self {
+        Self {
+            elements,
+            is_sequence,
+            outer_wrapper,
+        }
+    }
+
+    pub fn empty_sequence() -> Self {
+        Self {
+            elements: Vec::new(),
+            is_sequence: true,
+            outer_wrapper: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct JsonataObject(pub Vec<(String, JsonataValue)>);
+
+// Оставляем старые типы для совместимости пока не переделаем всё
+#[derive(Clone, Debug, PartialEq)]
 pub struct JsonArray {
     pub elements: Vec<JsonValue>,
     pub is_sequence: bool,
@@ -43,6 +72,61 @@ pub enum JsonValue {
     Function(JsonFunction),
 }
 
+#[derive(Clone)]
+pub enum JsonataValue {
+    Undefined,
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+    Array(JsonataArray),
+    Object(JsonataObject),
+    Function(JsonataFunction),
+    NativeRef(NativeRef),
+}
+
+// Хранит napi ссылку на JS объект
+#[derive(Clone)]
+pub struct NativeRef {
+    // Здесь будет храниться napi reference
+    pub handle: Arc<dyn Any + Send + Sync>,
+    pub value_type: NativeType,
+}
+
+#[derive(Clone, Debug)]
+pub enum NativeType {
+    JsFunction,
+    JsObject, 
+    JsArray,
+    JsOther,
+}
+
+impl JsonataValue {
+    pub fn undefined() -> Self {
+        JsonataValue::Undefined
+    }
+
+    pub fn bool(value: bool) -> Self {
+        JsonataValue::Bool(value)
+    }
+
+    pub fn string(value: impl Into<String>) -> Self {
+        JsonataValue::String(value.into())
+    }
+
+    pub fn sequence(elements: Vec<JsonataValue>) -> Self {
+        JsonataValue::Array(JsonataArray::new(elements, true, false))
+    }
+
+    pub fn is_undefined(&self) -> bool {
+        matches!(self, JsonataValue::Undefined)
+    }
+
+    pub fn native_ref(handle: Arc<dyn Any + Send + Sync>, value_type: NativeType) -> Self {
+        JsonataValue::NativeRef(NativeRef { handle, value_type })
+    }
+}
+
 impl JsonValue {
     pub fn undefined() -> Self {
         JsonValue::Undefined
@@ -62,6 +146,45 @@ impl JsonValue {
 
     pub fn is_undefined(&self) -> bool {
         matches!(self, JsonValue::Undefined)
+    }
+}
+
+#[derive(Clone)]
+pub struct JsonataFunction {
+    callable: Arc<dyn JsonataCallable>,
+}
+
+impl JsonataFunction {
+    pub fn new(callable: Arc<dyn JsonataCallable>) -> Self {
+        Self { callable }
+    }
+
+    pub fn call(
+        &self,
+        ctx: FunctionContext,
+        args: Vec<JsonataValue>,
+    ) -> BoxFuture<'static, Result<JsonataValue, JsonError>> {
+        self.callable.call(ctx, args)
+    }
+
+    pub fn arity(&self) -> Option<usize> {
+        self.callable.arity()
+    }
+
+    pub fn ptr_eq(&self, other: &JsonataFunction) -> bool {
+        Arc::ptr_eq(&self.callable, &other.callable)
+    }
+
+    pub fn as_callable(&self) -> &dyn JsonataCallable {
+        &*self.callable
+    }
+}
+
+impl fmt::Debug for JsonataFunction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JsonataFunction")
+            .field("callable", &"<opaque>")
+            .finish()
     }
 }
 
@@ -154,6 +277,20 @@ impl FunctionContext {
     }
 }
 
+pub trait JsonataCallable: Send + Sync + Any {
+    fn call(
+        &self,
+        ctx: FunctionContext,
+        args: Vec<JsonataValue>,
+    ) -> BoxFuture<'static, Result<JsonataValue, JsonError>>;
+
+    fn arity(&self) -> Option<usize> {
+        None
+    }
+
+    fn as_any(&self) -> &(dyn Any + Send + Sync);
+}
+
 pub trait JsonCallable: Send + Sync + Any {
     fn call(
         &self,
@@ -190,6 +327,39 @@ impl fmt::Display for JsonError {
 }
 
 impl std::error::Error for JsonError {}
+
+impl fmt::Debug for JsonataValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            JsonataValue::Undefined => write!(f, "Undefined"),
+            JsonataValue::Null => write!(f, "Null"),
+            JsonataValue::Bool(v) => f.debug_tuple("Bool").field(v).finish(),
+            JsonataValue::Number(n) => f.debug_tuple("Number").field(n).finish(),
+            JsonataValue::String(s) => f.debug_tuple("String").field(s).finish(),
+            JsonataValue::Array(a) => f.debug_tuple("Array").field(a).finish(),
+            JsonataValue::Object(o) => f.debug_tuple("Object").field(o).finish(),
+            JsonataValue::Function(func) => f.debug_tuple("Function").field(func).finish(),
+            JsonataValue::NativeRef(nr) => f.debug_tuple("NativeRef").field(&nr.value_type).finish(),
+        }
+    }
+}
+
+impl PartialEq for JsonataValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (JsonataValue::Undefined, JsonataValue::Undefined) => true,
+            (JsonataValue::Null, JsonataValue::Null) => true,
+            (JsonataValue::Bool(a), JsonataValue::Bool(b)) => a == b,
+            (JsonataValue::Number(a), JsonataValue::Number(b)) => a == b,
+            (JsonataValue::String(a), JsonataValue::String(b)) => a == b,
+            (JsonataValue::Array(a), JsonataValue::Array(b)) => a == b,
+            (JsonataValue::Object(a), JsonataValue::Object(b)) => a == b,
+            (JsonataValue::Function(a), JsonataValue::Function(b)) => a.ptr_eq(b),
+            (JsonataValue::NativeRef(_), JsonataValue::NativeRef(_)) => false, // Native refs не сравниваем
+            _ => false,
+        }
+    }
+}
 
 impl fmt::Debug for JsonValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

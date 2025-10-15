@@ -13,6 +13,7 @@ napi = { version = "3.3", default-features = false, features = ["napi6", "serde-
 napi-derive = "3.2"
 serde_json = "1.0"
 futures = "0.3"
+paste = "1.0"
 
 [build-dependencies]
 cargo-outdated = "0.17"

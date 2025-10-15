@@ -8,6 +8,8 @@ use napi::threadsafe_function::{
 use napi::{Env, Status, ValueType};
 use napi_derive::napi;
 
+mod function_registry;
+
 use jsonata_rust::functions::{core as core_impl, math as math_impl, strings as strings_impl};
 use jsonata_rust::types::{
     CallbackHandle, FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction,
@@ -1249,10 +1251,14 @@ fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()>
 #[napi(js_name = "load_functions")]
 pub fn load_functions(env: Env) -> napi::Result<JsUnknown<'static>> {
     let mut exports = Object::new(&env)?;
-    register_math(&env, &mut exports)?;
-    register_core(&env, &mut exports)?;
+    
+    // Используем новый registry
+    function_registry::register_all_functions(&env, &mut exports)?;
+    
+    // Пока оставляем старые функции для совместимости
     register_strings(&env, &mut exports)?;
     register_unimplemented(&env, &mut exports)?;
+    
     let unknown = exports.to_unknown();
     // SAFETY: the returned value is tied to the lifetime of the Node environment, which
     // outlives this call as the addon remains loaded.
