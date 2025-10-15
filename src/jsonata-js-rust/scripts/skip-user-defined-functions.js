@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const SUITE_PATTERNS = [
-  /^map a user-defined Javascript function/,
+  // /^map a user-defined Javascript function/,
   /^\$filter with a user-defined Javascript function$/,
   /^\$sift with a user-defined Javascript function$/,
   /^\$each with a user-defined Javascript function$/,

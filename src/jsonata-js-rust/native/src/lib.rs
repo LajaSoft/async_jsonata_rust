@@ -740,9 +740,23 @@ impl JsonCallable for JsFunctionCallable {
             Ok(invocation),
             ThreadsafeFunctionCallMode::NonBlocking,
             move |value: JsUnknown| {
-                let result = js_unknown_to_json_value(&env, value)
-                    .map_err(|err| napi_error_to_json("RUST", err));
-                callback_sender.send(result);
+                match value.is_promise() {
+                    Ok(true) => {
+                        if let Err(err) =
+                            attach_promise_handlers(&env, value, callback_sender.clone())
+                        {
+                            callback_sender.send(Err(napi_error_to_json("JS", err)));
+                        }
+                    }
+                    Ok(false) => {
+                        let result = js_unknown_to_json_value(&env, value)
+                            .map_err(|err| napi_error_to_json("RUST", err));
+                        callback_sender.send(result);
+                    }
+                    Err(err) => {
+                        callback_sender.send(Err(napi_error_to_json("JS", err)));
+                    }
+                }
                 Ok(())
             },
         );
@@ -764,4 +778,57 @@ impl JsonCallable for JsFunctionCallable {
             }
         })
     }
+}
+
+fn attach_promise_handlers(
+    env: &Env,
+    promise: JsUnknown,
+    sender: SharedSender,
+) -> napi::Result<()> {
+    let promise_object = promise.coerce_to_object()?;
+
+    let resolve_sender = sender.clone();
+    let resolve = env.create_function_from_closure("resolve", move |ctx: CallContext| {
+        let arg = if ctx.length > 0 {
+            ctx.get::<JsUnknown>(0)?
+        } else {
+            ctx.env.get_undefined()?.into_unknown()
+        };
+
+        let result =
+            js_unknown_to_json_value(ctx.env, arg).map_err(|err| napi_error_to_json("RUST", err));
+
+        match result {
+            Ok(value) => resolve_sender.send(Ok(value)),
+            Err(err) => resolve_sender.send(Err(err)),
+        }
+
+        ctx.env.get_undefined()
+    })?;
+
+    let reject_sender = sender.clone();
+    let reject = env.create_function_from_closure("reject", move |ctx: CallContext| {
+        let arg = if ctx.length > 0 {
+            ctx.get::<JsUnknown>(0)?
+        } else {
+            ctx.env.get_undefined()?.into_unknown()
+        };
+
+        let message = arg
+            .coerce_to_string()
+            .and_then(|value| value.into_utf8())
+            .and_then(|utf| utf.as_str().map(|s| s.to_owned()))
+            .unwrap_or_else(|_| "Promise rejected".to_owned());
+
+        reject_sender.send(Err(JsonError::new("JS", message)));
+
+        ctx.env.get_undefined()
+    })?;
+
+    let resolve_unknown = resolve.into_unknown();
+    let reject_unknown = reject.into_unknown();
+    let then_fn: JsFunction = promise_object.get_named_property("then")?;
+    then_fn.call(Some(&promise_object), &[resolve_unknown, reject_unknown])?;
+
+    Ok(())
 }
