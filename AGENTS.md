@@ -29,7 +29,7 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
   `rg "Function '([^']+)'" -o --no-line-number tmp/pnpm-test-last.log | sort | uniq -c | sort -nr`
 - Scan for bridge issues (current `$map/$zip` still yield `Error: JS: [object Object]`) via:  
   `rg -n "Error: JS" tmp/pnpm-test-last.log`
-- Prioritise the counts from the latest log snapshot (higher first): `base64encode`, `base64decode`, `encodeUrlComponent`, `encodeUrl`, `decodeUrlComponent`, `decodeUrl`.
+- Prioritise the counts from the latest log snapshot (higher first): `$single` parity (D3138/D3139 handling), `$foldLeft`/`$reduce` arity validation, async `$map/$zip` pipelines, and the regex map helpers.
 ## Execution Rules
 - **Container-only automation:** Run builds, tests, and tooling exclusively through Docker Compose (`docker compose run --rm dev …`). Host-level execution of the toolchain is off-limits.
 - **Source layout contract:** Treat `src/jsonata/` as upstream-read-only, implement Rust-native logic in `src/jsonata-rust/`, and maintain hybrid glue plus JavaScript-facing tweaks under `src/jsonata-js-rust/`.

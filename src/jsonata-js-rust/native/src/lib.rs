@@ -977,6 +977,66 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
 
     exports.set_named_property("string", string_fn)?;
 
+    let base64encode_fn =
+        env.create_function_from_closure::<(), sys::napi_value, _>("base64encode", |ctx| {
+            let value = arg_to_json_value(&ctx, 0)?;
+            match strings_impl::base64encode(&value) {
+                Ok(result) => map_unknown(json_value_to_js(ctx.env, result)),
+                Err(err) => Err(json_error_to_napi(err)),
+            }
+        })?;
+    exports.set_named_property("base64encode", base64encode_fn)?;
+
+    let base64decode_fn =
+        env.create_function_from_closure::<(), sys::napi_value, _>("base64decode", |ctx| {
+            let value = arg_to_json_value(&ctx, 0)?;
+            match strings_impl::base64decode(&value) {
+                Ok(result) => map_unknown(json_value_to_js(ctx.env, result)),
+                Err(err) => Err(json_error_to_napi(err)),
+            }
+        })?;
+    exports.set_named_property("base64decode", base64decode_fn)?;
+
+    let encode_component_fn = env
+        .create_function_from_closure::<(), sys::napi_value, _>("encodeUrlComponent", |ctx| {
+            let value = arg_to_json_value(&ctx, 0)?;
+            match strings_impl::encode_url_component(&value) {
+                Ok(result) => map_unknown(json_value_to_js(ctx.env, result)),
+                Err(err) => Err(json_error_to_napi(err)),
+            }
+        })?;
+    exports.set_named_property("encodeUrlComponent", encode_component_fn)?;
+
+    let encode_url_fn =
+        env.create_function_from_closure::<(), sys::napi_value, _>("encodeUrl", |ctx| {
+            let value = arg_to_json_value(&ctx, 0)?;
+            match strings_impl::encode_url(&value) {
+                Ok(result) => map_unknown(json_value_to_js(ctx.env, result)),
+                Err(err) => Err(json_error_to_napi(err)),
+            }
+        })?;
+    exports.set_named_property("encodeUrl", encode_url_fn)?;
+
+    let decode_component_fn = env
+        .create_function_from_closure::<(), sys::napi_value, _>("decodeUrlComponent", |ctx| {
+            let value = arg_to_json_value(&ctx, 0)?;
+            match strings_impl::decode_url_component(&value) {
+                Ok(result) => map_unknown(json_value_to_js(ctx.env, result)),
+                Err(err) => Err(json_error_to_napi(err)),
+            }
+        })?;
+    exports.set_named_property("decodeUrlComponent", decode_component_fn)?;
+
+    let decode_url_fn =
+        env.create_function_from_closure::<(), sys::napi_value, _>("decodeUrl", |ctx| {
+            let value = arg_to_json_value(&ctx, 0)?;
+            match strings_impl::decode_url(&value) {
+                Ok(result) => map_unknown(json_value_to_js(ctx.env, result)),
+                Err(err) => Err(json_error_to_napi(err)),
+            }
+        })?;
+    exports.set_named_property("decodeUrl", decode_url_fn)?;
+
     let substring_fn = env.create_function_from_closure::<(), sys::napi_value, _>("substring", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         let start = arg_to_json_value(&ctx, 1)?;
@@ -1067,12 +1127,6 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
 fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     const UNIMPLEMENTED: &[&str] = &[
         "error",
-        "base64encode",
-        "base64decode",
-        "encodeUrlComponent",
-        "encodeUrl",
-        "decodeUrlComponent",
-        "decodeUrl",
     ];
 
     for name in UNIMPLEMENTED {

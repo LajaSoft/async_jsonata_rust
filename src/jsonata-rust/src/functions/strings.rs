@@ -1,9 +1,36 @@
 use crate::types::{JsonArray, JsonError, JsonObject, JsonValue};
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use ryu::Buffer;
 use serde::Serialize;
 use serde_json::ser::{CompactFormatter, Formatter, PrettyFormatter, Serializer};
 use serde_json::{Map, Number, Value};
 use std::io;
+
+const ENCODE_URI_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'!')
+    .remove(b'~')
+    .remove(b'*')
+    .remove(b'\'')
+    .remove(b'(')
+    .remove(b')');
+
+const ENCODE_URI: &AsciiSet = &ENCODE_URI_COMPONENT
+    .remove(b';')
+    .remove(b'/')
+    .remove(b'?')
+    .remove(b':')
+    .remove(b'@')
+    .remove(b'&')
+    .remove(b'=')
+    .remove(b'+')
+    .remove(b'$')
+    .remove(b',')
+    .remove(b'#');
 
 struct JsonataFormatter<F> {
     inner: F,
@@ -469,6 +496,115 @@ pub fn string(value: &JsonValue, prettify: bool) -> Result<JsonValue, JsonError>
             "Unable to convert function to string",
         )),
     }
+}
+
+fn coerce_to_string(value: &JsonValue) -> Result<String, JsonError> {
+    match value {
+        JsonValue::String(text) => Ok(text.clone()),
+        _ => match string(value, false)? {
+            JsonValue::String(text) => Ok(text),
+            JsonValue::Undefined => Ok(String::new()),
+            _ => Ok(String::new()),
+        },
+    }
+}
+
+fn strict_percent_decode(input: &str) -> Result<Vec<u8>, ()> {
+    let mut buffer: Vec<u8> = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err(());
+            }
+            let high = hex_value(bytes[index + 1])?;
+            let low = hex_value(bytes[index + 2])?;
+            buffer.push((high << 4) | low);
+            index += 3;
+        } else {
+            buffer.push(byte);
+            index += 1;
+        }
+    }
+    Ok(buffer)
+}
+
+fn hex_value(byte: u8) -> Result<u8, ()> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(()),
+    }
+}
+
+pub fn base64encode(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    if matches!(value, JsonValue::Undefined) {
+        return Ok(JsonValue::Undefined);
+    }
+    let text = coerce_to_string(value)?;
+    let encoded = BASE64_STANDARD.encode(text.as_bytes());
+    Ok(JsonValue::String(encoded))
+}
+
+pub fn base64decode(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    if matches!(value, JsonValue::Undefined) {
+        return Ok(JsonValue::Undefined);
+    }
+    let text = coerce_to_string(value)?;
+    let decoded = BASE64_STANDARD
+        .decode(text.as_bytes())
+        .map_err(|err| JsonError::new("D3140", format!("Invalid base64 input: {}", err)))?;
+    let output: String = decoded.into_iter().map(char::from).collect();
+    Ok(JsonValue::String(output))
+}
+
+pub fn encode_url_component(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    if matches!(value, JsonValue::Undefined) {
+        return Ok(JsonValue::Undefined);
+    }
+    let text = coerce_to_string(value)?;
+    let encoded = utf8_percent_encode(&text, ENCODE_URI_COMPONENT).to_string();
+    Ok(JsonValue::String(encoded))
+}
+
+pub fn encode_url(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    if matches!(value, JsonValue::Undefined) {
+        return Ok(JsonValue::Undefined);
+    }
+    let text = coerce_to_string(value)?;
+    let encoded = utf8_percent_encode(&text, ENCODE_URI).to_string();
+    Ok(JsonValue::String(encoded))
+}
+
+fn decode_uri_value(value: &JsonValue, function_name: &str) -> Result<JsonValue, JsonError> {
+    if matches!(value, JsonValue::Undefined) {
+        return Ok(JsonValue::Undefined);
+    }
+    let text = coerce_to_string(value)?;
+    let decoded_bytes = strict_percent_decode(&text).map_err(|_| {
+        JsonError::new(
+            "D3140",
+            format!("{} encountered malformed escape sequence", function_name),
+        )
+    })?;
+    let decoded_string = String::from_utf8(decoded_bytes).map_err(|_| {
+        JsonError::new(
+            "D3140",
+            format!("{} encountered invalid UTF-8 data", function_name),
+        )
+    })?;
+    Ok(JsonValue::String(decoded_string))
+}
+
+pub fn decode_url_component(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    decode_uri_value(value, "$decodeUrlComponent")
+}
+
+pub fn decode_url(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    decode_uri_value(value, "$decodeUrl")
 }
 
 pub fn substring(

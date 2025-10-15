@@ -2261,7 +2261,9 @@ dependencies = [
 name = "jsonata_rust"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "futures",
+ "percent-encoding",
  "rand 0.9.2",
  "ryu",
  "serde",
