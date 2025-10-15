@@ -12,6 +12,18 @@ fn option_number_to_js(env: &Env, value: Option<f64>) -> napi::Result<JsUnknown>
     }
 }
 
+fn get_number_arg(ctx: &CallContext, index: usize) -> napi::Result<Option<f64>> {
+    if index >= ctx.length {
+        return Ok(None);
+    }
+    let value: JsUnknown = ctx.get(index)?;
+    if matches!(value.get_type()?, ValueType::Undefined) {
+        return Ok(None);
+    }
+    let coerced = value.coerce_to_number()?.get_double()?;
+    Ok(Some(coerced))
+}
+
 fn extract_numeric_args(ctx: &CallContext) -> napi::Result<Option<Vec<f64>>> {
     if ctx.length == 0 {
         return Ok(None);
@@ -78,6 +90,62 @@ fn register_math(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
         )
     })?;
     exports.set_named_property("average", average)?;
+
+    let count = env.create_function_from_closure("count", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        json_value_to_js(ctx.env, math_impl::count_value(&value))
+    })?;
+    exports.set_named_property("count", count)?;
+
+    let abs = env.create_function_from_closure("abs", |ctx| {
+        let value = get_number_arg(&ctx, 0)?;
+        option_number_to_js(ctx.env, math_impl::abs(value))
+    })?;
+    exports.set_named_property("abs", abs)?;
+
+    let floor = env.create_function_from_closure("floor", |ctx| {
+        let value = get_number_arg(&ctx, 0)?;
+        option_number_to_js(ctx.env, math_impl::floor(value))
+    })?;
+    exports.set_named_property("floor", floor)?;
+
+    let ceil = env.create_function_from_closure("ceil", |ctx| {
+        let value = get_number_arg(&ctx, 0)?;
+        option_number_to_js(ctx.env, math_impl::ceil(value))
+    })?;
+    exports.set_named_property("ceil", ceil)?;
+
+    let round = env.create_function_from_closure("round", |ctx| {
+        let value = get_number_arg(&ctx, 0)?;
+        let precision = get_number_arg(&ctx, 1)?;
+        option_number_to_js(ctx.env, math_impl::round(value, precision))
+    })?;
+    exports.set_named_property("round", round)?;
+
+    let sqrt = env.create_function_from_closure("sqrt", |ctx| {
+        let value = get_number_arg(&ctx, 0)?;
+        match math_impl::sqrt(value) {
+            Ok(result) => option_number_to_js(ctx.env, result),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+    exports.set_named_property("sqrt", sqrt)?;
+
+    let power = env.create_function_from_closure("power", |ctx| {
+        let base = get_number_arg(&ctx, 0)?;
+        let exponent = get_number_arg(&ctx, 1)?;
+        match math_impl::power(base, exponent) {
+            Ok(result) => option_number_to_js(ctx.env, result),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+    exports.set_named_property("power", power)?;
+
+    let random = env.create_function_from_closure("random", |ctx| {
+        let value = math_impl::random();
+        ctx.env.create_double(value).map(|v| v.into_unknown())
+    })?;
+    exports.set_named_property("random", random)?;
 
     Ok(())
 }
@@ -338,6 +406,20 @@ fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("keys", keys)?;
 
+    let boolean_fn = env.create_function_from_closure("boolean", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        let result = core_impl::boolean(&value);
+        json_value_to_js(ctx.env, result)
+    })?;
+    exports.set_named_property("boolean", boolean_fn)?;
+
+    let not_fn = env.create_function_from_closure("not", |ctx| {
+        let value = arg_to_json_value(&ctx, 0)?;
+        let result = core_impl::not(&value);
+        json_value_to_js(ctx.env, result)
+    })?;
+    exports.set_named_property("not", not_fn)?;
+
     Ok(())
 }
 
@@ -453,24 +535,9 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
 
 fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     const UNIMPLEMENTED: &[&str] = &[
-        "count",
-        "match",
-        "contains",
-        "replace",
-        "split",
-        "join",
         "formatNumber",
         "formatBase",
         "number",
-        "floor",
-        "ceil",
-        "round",
-        "abs",
-        "sqrt",
-        "power",
-        "random",
-        "boolean",
-        "not",
         "map",
         "zip",
         "filter",
