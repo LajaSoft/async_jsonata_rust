@@ -18,6 +18,8 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
 - **Regression guards:** Add Rust-side unit/property tests mirroring any upstream scenario that previously failed.
 - **User first:** If user interrupted work and ask to do something different than you think is best - count it with priority, because probably user spotted some wrong behavior and want align current run.
 
+## before dig deep into project, just run tests
+
 ## Execution Rules
 - **Container-only automation:** Run builds, tests, and tooling exclusively through Docker Compose (`docker compose run --rm dev …`). Host-level execution of the toolchain is off-limits.
 - **Source layout contract:** Treat `src/jsonata/` as upstream-read-only, implement Rust-native logic in `src/jsonata-rust/`, and maintain hybrid glue plus JavaScript-facing tweaks under `src/jsonata-js-rust/`.
@@ -63,6 +65,9 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
 - `src/jsonata-js-rust/scripts/skip-browser-build.js`: placeholder disabling browser bundling (Node runtime focus).
 - `src/jsonata-js-rust/src/functions.js`: now a thin shim that imports `native.load_functions()`; Rust controls the full built-in surface.
 - `cargo xtask coverage`: drives code coverage + regression summary.
+- Tooling: `nyc` bumped to `17.1.0` (pulls in `foreground-child@3.3.1`) to avoid TTY/exit-code crashes when the native bridge aborts mid-test.
+- Run `cargo outdated` for the N-API bridge via container: `docker compose run --rm -e DOCKER_CONFIG=/workspace/.docker --workdir /workspace/src/jsonata-js-rust/native dev bash -lc 'export PATH=/workspace/.cargo/bin:/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && cargo outdated'`.
+- codex shall run `docker compose` command with escalated permissions, it will fail otherwise due to environmant setup. 
 
 ## Status Tracking
 - Maintain a `PORTING.md` matrix mapping JSONata features to Rust modules with state (`pending`, `partial`, `done`).
@@ -78,6 +83,18 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
 - Extend the N-API bridge with a unified callable wrapper that can represent JSONata callbacks as Rust-owned functions (sync and async), allowing the JS suite for user-defined functions to run natively again.
 - Re-enable the skipped user-defined-function tests once the wrapper lands to keep parity coverage for async evaluation paths.
 - Finish porting the remaining higher-order helpers in Rust (`$map`, `$each`, `$number`, partial application helpers) so the hybrid runtime can clear the dependent conformance groups.
+
+## N-API Migration Plan
+- Rework the native bridge to the napi 3.3 API surface (no `compat-mode`), swapping direct `Js*` wrappers for `Unknown/Object/Function` helpers and rebuilding the threadsafe callback pipeline.
+- Replace the ad-hoc conversions with helper utilities that return raw `sys::napi_value`, ensuring lifetimes line up with the new `FunctionCallContext`.
+- Once the bridge compiles, rerun `docker compose run --rm --workdir /workspace/src/jsonata-js-rust dev pnpm test` to capture the updated failure surface before resuming feature work.
+
+## Refactor Tips
+- `docker compose run --rm --workdir /workspace/src/jsonata-js-rust dev pnpm test` — quickest end-to-end signal for napi regressions.
+- `docker compose run --rm --workdir /workspace/src/jsonata-js-rust/native dev cargo check` — faster compile feedback for the bridge crate.
+- `rg "napi_create" tmp/napi-rs/crates` — locate upstream napi-rs call patterns when mirroring bindings.
+- `rg --files -g"*.rs" src/jsonata-js-rust/native` — scope the Rust bridge surface when hunting definitions.
+- `docker compose run --rm --workdir /workspace/src/jsonata-js-rust/native dev bash -lc "RUST_LOG=napi=trace pnpm test"` — surface verbose napi diagnostics inside the container.
 
 ## Callback Bridging Design Notes
 - Introduce a `JsonValue::Function` variant backed by an `Arc<dyn JsonCallable>` so Rust helpers can accept and invoke callback arguments without inspecting their origin.

@@ -69,8 +69,8 @@ fn shift_decimal(value: f64, shift: f64) -> f64 {
 }
 
 pub fn random() -> f64 {
-    let mut rng = rand::thread_rng();
-    rng.gen::<f64>()
+    let mut rng = rand::rng();
+    rng.random::<f64>()
 }
 
 fn parse_radix_string(text: &str) -> Option<f64> {

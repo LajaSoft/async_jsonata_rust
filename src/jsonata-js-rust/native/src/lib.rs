@@ -3,9 +3,9 @@ use futures::future::BoxFuture;
 use napi::bindgen_prelude::*;
 use napi::sys;
 use napi::threadsafe_function::{
-    ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
+    ThreadsafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
 };
-use napi::{CallContext, Env, JsFunction, JsObject, JsUnknown, NapiRaw, NapiValue, Status, ValueType};
+use napi::{Env, Status, ValueType};
 use napi_derive::napi;
 
 use jsonata_rust::functions::{core as core_impl, math as math_impl, strings as strings_impl};
@@ -14,17 +14,202 @@ use jsonata_rust::types::{
     JsonObject, JsonValue, JsonataFocus,
 };
 use std::any::Any;
+use std::ffi::CString;
+use std::fs::OpenOptions;
+use std::io::Write as IoWrite;
+use std::mem;
+use std::ptr;
 use std::sync::{Arc, Mutex};
+
+type JsUnknown<'env> = Unknown<'env>;
+type JsObject<'env> = Object<'env>;
+type JsFunction<'env> = Function<'env>;
+type CallContext<'env> = FunctionCallContext<'env>;
+
+fn undefined(env: &Env) -> napi::Result<JsUnknown> {
+    ().into_unknown(env)
+}
+
+fn null(env: &Env) -> napi::Result<JsUnknown> {
+    Null.into_unknown(env)
+}
+
+fn bool_to_unknown(env: &Env, value: bool) -> napi::Result<JsUnknown> {
+    value.into_unknown(env)
+}
+
+fn ok_raw(value: JsUnknown) -> napi::Result<sys::napi_value> {
+    Ok(value.raw())
+}
+
+fn map_unknown(result: napi::Result<JsUnknown>) -> napi::Result<sys::napi_value> {
+    result.map(|value| value.raw())
+}
+
+struct RawArgList {
+    values: Vec<sys::napi_value>,
+}
+
+impl JsValuesTupleIntoVec for RawArgList {
+    fn into_vec(mut self, _env: sys::napi_env) -> napi::Result<Vec<sys::napi_value>> {
+        Ok(std::mem::take(&mut self.values))
+    }
+}
+
+trait JsObjectExt<'env> {
+    fn get_named_property<T: FromNapiValue>(&self, name: &str) -> napi::Result<T>;
+    fn set_named_property<T: ToNapiValue>(&self, name: &str, value: T) -> napi::Result<()>;
+    fn has_named_property(&self, name: &str) -> napi::Result<bool>;
+    fn get_array_length(&self) -> napi::Result<u32>;
+    fn get_element<T: FromNapiValue>(&self, index: u32) -> napi::Result<T>;
+    fn set_element<T: ToNapiValue>(&self, index: u32, value: T) -> napi::Result<()>;
+    fn into_unknown(self) -> JsUnknown<'env>;
+    fn get_property_names(&self) -> napi::Result<JsObject<'env>>;
+}
+
+impl<'env> JsObjectExt<'env> for JsObject<'env> {
+    fn get_named_property<T: FromNapiValue>(&self, name: &str) -> napi::Result<T> {
+        let env = self.value().env;
+        let raw_obj = self.raw();
+        let c_name = CString::new(name)?;
+        let mut raw_value = ptr::null_mut();
+        check_status!(unsafe {
+            sys::napi_get_named_property(env, raw_obj, c_name.as_ptr(), &mut raw_value)
+        })?;
+        unsafe { T::from_napi_value(env, raw_value) }
+    }
+
+    fn set_named_property<T: ToNapiValue>(&self, name: &str, value: T) -> napi::Result<()> {
+        let env = self.value().env;
+        let raw_obj = self.raw();
+        let c_name = CString::new(name)?;
+        let raw_value = unsafe { T::to_napi_value(env, value)? };
+        check_status!(unsafe {
+            sys::napi_set_named_property(env, raw_obj, c_name.as_ptr(), raw_value)
+        })?;
+        Ok(())
+    }
+
+    fn has_named_property(&self, name: &str) -> napi::Result<bool> {
+        let env = self.value().env;
+        let raw_obj = self.raw();
+        let c_name = CString::new(name)?;
+        let mut has_property = false;
+        check_status!(unsafe {
+            sys::napi_has_named_property(env, raw_obj, c_name.as_ptr(), &mut has_property)
+        })?;
+        Ok(has_property)
+    }
+
+    fn get_array_length(&self) -> napi::Result<u32> {
+        let env = self.value().env;
+        let raw_obj = self.raw();
+        let mut is_array = false;
+        check_status!(unsafe { sys::napi_is_array(env, raw_obj, &mut is_array) })?;
+        if !is_array {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "Value is not an array".to_owned(),
+            ));
+        }
+        let mut length = 0;
+        check_status!(unsafe { sys::napi_get_array_length(env, raw_obj, &mut length) })?;
+        Ok(length)
+    }
+
+    fn get_element<T: FromNapiValue>(&self, index: u32) -> napi::Result<T> {
+        let env = self.value().env;
+        let raw_obj = self.raw();
+        let mut raw_value = ptr::null_mut();
+        check_status!(unsafe { sys::napi_get_element(env, raw_obj, index, &mut raw_value) })?;
+        unsafe { T::from_napi_value(env, raw_value) }
+    }
+
+    fn set_element<T: ToNapiValue>(&self, index: u32, value: T) -> napi::Result<()> {
+        let env = self.value().env;
+        let raw_obj = self.raw();
+        let raw_value = unsafe { T::to_napi_value(env, value)? };
+        check_status!(unsafe { sys::napi_set_element(env, raw_obj, index, raw_value) })?;
+        Ok(())
+    }
+
+    fn into_unknown(self) -> JsUnknown<'env> {
+        self.to_unknown()
+    }
+
+    fn get_property_names(&self) -> napi::Result<JsObject<'env>> {
+        let env = self.value().env;
+        let raw_obj = self.raw();
+        let mut raw_names = ptr::null_mut();
+        check_status!(unsafe { sys::napi_get_property_names(env, raw_obj, &mut raw_names) })?;
+        Ok(Object::from_raw(env, raw_names))
+    }
+}
+
+trait JsFunctionExt<'env> {
+    fn try_from_unknown(value: JsUnknown<'env>) -> napi::Result<JsFunction<'env>>;
+    fn call(
+        &self,
+        this: Option<&JsObject<'env>>,
+        args: &[JsUnknown<'env>],
+    ) -> napi::Result<JsUnknown<'env>>;
+}
+
+impl<'env> JsFunctionExt<'env> for JsFunction<'env> {
+    fn try_from_unknown(value: JsUnknown<'env>) -> napi::Result<JsFunction<'env>> {
+        if value.get_type()? != ValueType::Function {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "Value is not a function".to_owned(),
+            ));
+        }
+        unsafe { value.cast::<JsFunction<'env>>() }
+    }
+
+    fn call(
+        &self,
+        this: Option<&JsObject<'env>>,
+        args: &[JsUnknown<'env>],
+    ) -> napi::Result<JsUnknown<'env>> {
+        let env = self.value().env;
+        let this_value = if let Some(this_obj) = this {
+            this_obj.raw()
+        } else {
+            let mut undefined = ptr::null_mut();
+            check_status!(unsafe { sys::napi_get_undefined(env, &mut undefined) })?;
+            undefined
+        };
+        let mut raw_args: Vec<sys::napi_value> = Vec::with_capacity(args.len());
+        for arg in args {
+            raw_args.push(arg.raw());
+        }
+        let mut raw_result = ptr::null_mut();
+        check_pending_exception!(
+            env,
+            unsafe {
+                sys::napi_call_function(
+                    env,
+                    this_value,
+                    self.raw(),
+                    raw_args.len(),
+                    raw_args.as_ptr(),
+                    &mut raw_result,
+                )
+            }
+        )?;
+        unsafe { JsUnknown::from_napi_value(env, raw_result) }
+    }
+}
 
 fn option_number_to_js(env: &Env, value: Option<f64>) -> napi::Result<JsUnknown> {
     match value {
-        Some(num) => env.create_double(num).map(|n| n.into_unknown()),
-        None => env.get_undefined().map(|u| u.into_unknown()),
+        Some(num) => env.create_double(num).and_then(|n| n.into_unknown(env)),
+        None => undefined(env),
     }
 }
 
 fn get_number_arg(ctx: &CallContext, index: usize) -> napi::Result<Option<f64>> {
-    if index >= ctx.length {
+    if index >= ctx.length() {
         return Ok(None);
     }
     let value: JsUnknown = ctx.get(index)?;
@@ -36,7 +221,7 @@ fn get_number_arg(ctx: &CallContext, index: usize) -> napi::Result<Option<f64>> 
 }
 
 fn extract_numeric_args(ctx: &CallContext) -> napi::Result<Option<Vec<f64>>> {
-    if ctx.length == 0 {
+    if ctx.length() == 0 {
         return Ok(None);
     }
     let first: JsUnknown = ctx.get(0)?;
@@ -66,104 +251,108 @@ fn extract_numeric_args(ctx: &CallContext) -> napi::Result<Option<Vec<f64>>> {
 }
 
 fn register_math(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
-    let sum = env.create_function_from_closure("sum", |ctx| {
+    let sum = env.create_function_from_closure::<(), sys::napi_value, _>("sum", |ctx| {
         let values = extract_numeric_args(&ctx)?;
-        option_number_to_js(
+        map_unknown(option_number_to_js(
             ctx.env,
             math_impl::sum(values.as_ref().map(|v| v.as_slice())),
-        )
+        ))
     })?;
     exports.set_named_property("sum", sum)?;
 
-    let max = env.create_function_from_closure("max", |ctx| {
+    let max = env.create_function_from_closure::<(), sys::napi_value, _>("max", |ctx| {
         let values = extract_numeric_args(&ctx)?;
-        option_number_to_js(
+        map_unknown(option_number_to_js(
             ctx.env,
             math_impl::max(values.as_ref().map(|v| v.as_slice())),
-        )
+        ))
     })?;
     exports.set_named_property("max", max)?;
 
-    let min = env.create_function_from_closure("min", |ctx| {
+    let min = env.create_function_from_closure::<(), sys::napi_value, _>("min", |ctx| {
         let values = extract_numeric_args(&ctx)?;
-        option_number_to_js(
+        map_unknown(option_number_to_js(
             ctx.env,
             math_impl::min(values.as_ref().map(|v| v.as_slice())),
-        )
+        ))
     })?;
     exports.set_named_property("min", min)?;
 
-    let average = env.create_function_from_closure("average", |ctx| {
+    let average = env.create_function_from_closure::<(), sys::napi_value, _>("average", |ctx| {
         let values = extract_numeric_args(&ctx)?;
-        option_number_to_js(
+        map_unknown(option_number_to_js(
             ctx.env,
             math_impl::average(values.as_ref().map(|v| v.as_slice())),
-        )
+        ))
     })?;
     exports.set_named_property("average", average)?;
 
-    let count = env.create_function_from_closure("count", |ctx| {
+    let count = env.create_function_from_closure::<(), sys::napi_value, _>("count", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
-        json_value_to_js(ctx.env, math_impl::count_value(&value))
+        map_unknown(json_value_to_js(ctx.env, math_impl::count_value(&value)))
     })?;
     exports.set_named_property("count", count)?;
 
-    let abs = env.create_function_from_closure("abs", |ctx| {
+    let abs = env.create_function_from_closure::<(), sys::napi_value, _>("abs", |ctx| {
         let value = get_number_arg(&ctx, 0)?;
-        option_number_to_js(ctx.env, math_impl::abs(value))
+        map_unknown(option_number_to_js(ctx.env, math_impl::abs(value)))
     })?;
     exports.set_named_property("abs", abs)?;
 
-    let floor = env.create_function_from_closure("floor", |ctx| {
+    let floor = env.create_function_from_closure::<(), sys::napi_value, _>("floor", |ctx| {
         let value = get_number_arg(&ctx, 0)?;
-        option_number_to_js(ctx.env, math_impl::floor(value))
+        map_unknown(option_number_to_js(ctx.env, math_impl::floor(value)))
     })?;
     exports.set_named_property("floor", floor)?;
 
-    let ceil = env.create_function_from_closure("ceil", |ctx| {
+    let ceil = env.create_function_from_closure::<(), sys::napi_value, _>("ceil", |ctx| {
         let value = get_number_arg(&ctx, 0)?;
-        option_number_to_js(ctx.env, math_impl::ceil(value))
+        map_unknown(option_number_to_js(ctx.env, math_impl::ceil(value)))
     })?;
     exports.set_named_property("ceil", ceil)?;
 
-    let round = env.create_function_from_closure("round", |ctx| {
+    let round = env.create_function_from_closure::<(), sys::napi_value, _>("round", |ctx| {
         let value = get_number_arg(&ctx, 0)?;
         let precision = get_number_arg(&ctx, 1)?;
-        option_number_to_js(ctx.env, math_impl::round(value, precision))
+        map_unknown(option_number_to_js(ctx.env, math_impl::round(value, precision)))
     })?;
     exports.set_named_property("round", round)?;
 
-    let sqrt = env.create_function_from_closure("sqrt", |ctx| {
+    let sqrt = env.create_function_from_closure::<(), sys::napi_value, _>("sqrt", |ctx| {
         let value = get_number_arg(&ctx, 0)?;
         match math_impl::sqrt(value) {
-            Ok(result) => option_number_to_js(ctx.env, result),
+            Ok(result) => map_unknown(option_number_to_js(ctx.env, result)),
             Err(err) => Err(json_error_to_napi(err)),
         }
     })?;
     exports.set_named_property("sqrt", sqrt)?;
 
-    let power = env.create_function_from_closure("power", |ctx| {
+    let power = env.create_function_from_closure::<(), sys::napi_value, _>("power", |ctx| {
         let base = get_number_arg(&ctx, 0)?;
         let exponent = get_number_arg(&ctx, 1)?;
         match math_impl::power(base, exponent) {
-            Ok(result) => option_number_to_js(ctx.env, result),
+            Ok(result) => map_unknown(option_number_to_js(ctx.env, result)),
             Err(err) => Err(json_error_to_napi(err)),
         }
     })?;
     exports.set_named_property("power", power)?;
 
-    let number_fn = env.create_function_from_closure("number", |ctx| {
+    let number_fn = env.create_function_from_closure::<(), sys::napi_value, _>("number", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         match math_impl::number(&value) {
-            Ok(result) => json_value_to_js(ctx.env, result),
+            Ok(result) => map_unknown(json_value_to_js(ctx.env, result)),
             Err(err) => Err(json_error_to_napi(err)),
         }
     })?;
     exports.set_named_property("number", number_fn)?;
 
-    let random = env.create_function_from_closure("random", |ctx| {
+    let random = env.create_function_from_closure::<(), sys::napi_value, _>("random", |ctx| {
         let value = math_impl::random();
-        ctx.env.create_double(value).map(|v| v.into_unknown())
+        map_unknown(
+            ctx.env
+                .create_double(value)
+                .and_then(|v| v.into_unknown(ctx.env)),
+        )
     })?;
     exports.set_named_property("random", random)?;
 
@@ -174,7 +363,7 @@ fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Result<JsonVal
     match value.get_type()? {
         ValueType::Undefined => Ok(JsonValue::Undefined),
         ValueType::Null => Ok(JsonValue::Null),
-        ValueType::Boolean => Ok(JsonValue::Bool(value.coerce_to_bool()?.get_value()?)),
+        ValueType::Boolean => Ok(JsonValue::Bool(value.coerce_to_bool()?)),
         ValueType::Number => Ok(JsonValue::Number(value.coerce_to_number()?.get_double()?)),
         ValueType::String => Ok(JsonValue::String(
             value.coerce_to_string()?.into_utf8()?.as_str()?.to_owned(),
@@ -183,7 +372,7 @@ fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Result<JsonVal
             value.coerce_to_string()?.into_utf8()?.as_str()?.to_owned(),
         )),
         ValueType::Function => {
-            let js_func = JsFunction::from_unknown(value)?;
+            let js_func = JsFunction::try_from_unknown(value)?;
             let callable = JsFunctionCallable::new(env, js_func)?;
             Ok(JsonValue::Function(JsonFunction::new(Arc::new(callable))))
         }
@@ -201,7 +390,7 @@ fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Result<JsonVal
                 if object.has_named_property("sequence")? {
                     let flag: JsUnknown = object.get_named_property("sequence")?;
                     is_sequence = match flag.get_type()? {
-                        ValueType::Boolean => flag.coerce_to_bool()?.get_value()?,
+                        ValueType::Boolean => flag.coerce_to_bool()?,
                         ValueType::Number => flag.coerce_to_number()?.get_double()? != 0.0,
                         ValueType::String => flag
                             .coerce_to_string()?
@@ -216,7 +405,7 @@ fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Result<JsonVal
                 if object.has_named_property("outerWrapper")? {
                     let flag: JsUnknown = object.get_named_property("outerWrapper")?;
                     outer_wrapper = match flag.get_type()? {
-                        ValueType::Boolean => flag.coerce_to_bool()?.get_value()?,
+                        ValueType::Boolean => flag.coerce_to_bool()?,
                         ValueType::Number => flag.coerce_to_number()?.get_double()? != 0.0,
                         ValueType::String => flag
                             .coerce_to_string()?
@@ -233,7 +422,7 @@ fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Result<JsonVal
                     outer_wrapper,
                 )))
             } else {
-                let property_names = object.get_property_names()?;
+                let property_names = JsObjectExt::get_property_names(&object)?;
                 let total = property_names.get_array_length()?;
                 let mut props = Vec::with_capacity(total as usize);
                 for index in 0..total {
@@ -259,29 +448,28 @@ fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Result<JsonVal
 
 fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUnknown> {
     match value {
-        JsonValue::Undefined => env.get_undefined().map(|v| v.into_unknown()),
-        JsonValue::Null => env.get_null().map(|v| v.into_unknown()),
-        JsonValue::Bool(flag) => env.get_boolean(flag).map(|v| v.into_unknown()),
-        JsonValue::Number(num) => env.create_double(num).map(|v| v.into_unknown()),
-        JsonValue::String(text) => env.create_string(&text).map(|v| v.into_unknown()),
+        JsonValue::Undefined => undefined(env),
+        JsonValue::Null => null(env),
+        JsonValue::Bool(flag) => bool_to_unknown(env, flag),
+        JsonValue::Number(num) => env.create_double(num).and_then(|v| v.into_unknown(env)),
+        JsonValue::String(text) => env.create_string(&text).and_then(|v| v.into_unknown(env)),
         JsonValue::Array(array) => {
-            let mut js_array: JsObject = env.create_array_with_length(array.elements.len())?;
+            let mut js_array =
+                Array::new(env.raw(), array.elements.len() as u32)?.coerce_to_object()?;
             for (index, element) in array.elements.into_iter().enumerate() {
                 let js_value = json_value_to_js(env, element)?;
                 js_array.set_element(index as u32, js_value)?;
             }
             if array.is_sequence {
-                let flag = env.get_boolean(true)?;
-                js_array.set_named_property("sequence", flag)?;
+                js_array.set_named_property("sequence", true)?;
             }
             if array.outer_wrapper {
-                let flag = env.get_boolean(true)?;
-                js_array.set_named_property("outerWrapper", flag)?;
+                js_array.set_named_property("outerWrapper", true)?;
             }
             Ok(js_array.into_unknown())
         }
         JsonValue::Object(JsonObject(entries)) => {
-            let mut js_object = env.create_object()?;
+            let mut js_object = Object::new(env)?;
             for (key, entry_value) in entries {
                 let js_value = json_value_to_js(env, entry_value)?;
                 js_object.set_named_property(&key, js_value)?;
@@ -292,7 +480,7 @@ fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUnknown> {
             let callable = function.as_callable();
             if let Some(js_callable) = callable.as_any().downcast_ref::<JsFunctionCallable>() {
                 let js_func = js_callable.to_js_function(env)?;
-                Ok(js_func.into_unknown())
+                Ok(js_func.to_unknown())
             } else {
                 Err(Error::new(
                     Status::InvalidArg,
@@ -304,13 +492,13 @@ fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUnknown> {
 }
 
 fn property_flag_is_truthy(object: &JsObject, name: &str) -> napi::Result<bool> {
-    if !object.has_named_property(name)? {
+    if !JsObjectExt::has_named_property(object, name)? {
         return Ok(false);
     }
-    let flag: JsUnknown = object.get_named_property(name)?;
+    let flag: JsUnknown = JsObjectExt::get_named_property(object, name)?;
     match flag.get_type()? {
         ValueType::Undefined | ValueType::Null => Ok(false),
-        ValueType::Boolean => flag.coerce_to_bool()?.get_value(),
+        ValueType::Boolean => flag.coerce_to_bool(),
         ValueType::Number => Ok(flag.coerce_to_number()?.get_double()? != 0.0),
         ValueType::String => {
             let text = flag.coerce_to_string()?.into_utf8()?.as_str()?.to_owned();
@@ -330,37 +518,44 @@ fn is_jsonata_function_object(object: &JsObject) -> napi::Result<bool> {
     Ok(false)
 }
 
-fn create_sequence_array(env: &Env, elements: Vec<JsUnknown>) -> napi::Result<JsUnknown> {
-    let mut js_array: JsObject = env.create_array_with_length(elements.len())?;
+fn create_sequence_array<'env>(
+    env: &'env Env,
+    elements: Vec<JsUnknown<'env>>,
+) -> napi::Result<JsUnknown<'env>> {
+    let mut array = Array::new(env.raw(), elements.len() as u32)?;
     for (index, element) in elements.into_iter().enumerate() {
-        js_array.set_element(index as u32, element)?;
+        array.set(index as u32, element)?;
     }
-    let flag = env.get_boolean(true)?;
-    js_array.set_named_property("sequence", flag)?;
+    let mut js_array = array.coerce_to_object()?;
+    JsObjectExt::set_named_property(&js_array, "sequence", true)?;
     Ok(js_array.into_unknown())
 }
 
-fn lookup_js(env: &Env, value: JsUnknown, key: &str) -> napi::Result<Option<JsUnknown>> {
+fn lookup_js<'env>(
+    env: &'env Env,
+    value: JsUnknown<'env>,
+    key: &str,
+) -> napi::Result<Option<JsUnknown<'env>>> {
     match value.get_type()? {
         ValueType::Undefined | ValueType::Null => Ok(None),
         ValueType::Function => Ok(None),
         ValueType::Object => {
             let object = value.coerce_to_object()?;
             if object.is_array()? {
-                let length = object.get_array_length()?;
+                let length = JsObjectExt::get_array_length(&object)?;
                 let mut aggregated: Vec<JsUnknown> = Vec::new();
                 for index in 0..length {
-                    let element: JsUnknown = object.get_element(index)?;
+                    let element: JsUnknown = JsObjectExt::get_element(&object, index)?;
                     if let Some(resolved) = lookup_js(env, element, key)? {
                         match resolved.get_type()? {
                             ValueType::Undefined | ValueType::Null => {}
                             ValueType::Object => {
                                 let resolved_object = resolved.coerce_to_object()?;
                                 if resolved_object.is_array()? {
-                                    let inner_length = resolved_object.get_array_length()?;
+                                    let inner_length = JsObjectExt::get_array_length(&resolved_object)?;
                                     for inner_index in 0..inner_length {
                                         let inner_value: JsUnknown =
-                                            resolved_object.get_element(inner_index)?;
+                                            JsObjectExt::get_element(&resolved_object, inner_index)?;
                                         aggregated.push(inner_value);
                                     }
                                 } else {
@@ -377,8 +572,8 @@ fn lookup_js(env: &Env, value: JsUnknown, key: &str) -> napi::Result<Option<JsUn
                 if is_jsonata_function_object(&object)? {
                     return Ok(None);
                 }
-                if object.has_named_property(key)? {
-                    let property: JsUnknown = object.get_named_property(key)?;
+                if JsObjectExt::has_named_property(&object, key)? {
+                    let property: JsUnknown = JsObjectExt::get_named_property(&object, key)?;
                     if matches!(property.get_type()?, ValueType::Undefined) {
                         return Ok(None);
                     }
@@ -392,7 +587,7 @@ fn lookup_js(env: &Env, value: JsUnknown, key: &str) -> napi::Result<Option<JsUn
 }
 
 fn arg_to_json_value(ctx: &CallContext, index: usize) -> napi::Result<JsonValue> {
-    if index >= ctx.length {
+    if index >= ctx.length() {
         return Ok(JsonValue::Undefined);
     }
     let value: JsUnknown = ctx.get(index)?;
@@ -400,7 +595,7 @@ fn arg_to_json_value(ctx: &CallContext, index: usize) -> napi::Result<JsonValue>
 }
 
 fn function_context_from_this(ctx: &CallContext) -> napi::Result<FunctionContext> {
-    let this_value = ctx.this_unchecked::<JsUnknown>();
+    let this_value = ctx.this::<JsUnknown>()?;
     match this_value.get_type()? {
         ValueType::Undefined | ValueType::Null => Ok(FunctionContext::empty()),
         _ => {
@@ -442,7 +637,7 @@ unsafe impl Sync for JsThisHandle {}
 impl JsThisHandle {
     fn new(env: sys::napi_env, value: &JsUnknown) -> napi::Result<Self> {
         let mut reference = std::ptr::null_mut();
-        let raw_value = unsafe { value.raw() };
+        let raw_value = value.raw();
         let status = unsafe { sys::napi_create_reference(env, raw_value, 1, &mut reference) };
         if status != sys::Status::napi_ok {
             return Err(Error::from_status(Status::from(status)));
@@ -479,7 +674,7 @@ unsafe impl Sync for JsFunctionHandle {}
 impl JsFunctionHandle {
     fn new(env: sys::napi_env, func: &JsFunction) -> napi::Result<Self> {
         let mut reference = std::ptr::null_mut();
-        let raw_func = unsafe { func.raw() };
+        let raw_func = func.raw();
         let status = unsafe { sys::napi_create_reference(env, raw_func, 1, &mut reference) };
         if status != sys::Status::napi_ok {
             return Err(Error::from_status(Status::from(status)));
@@ -493,7 +688,7 @@ impl JsFunctionHandle {
         if status != sys::Status::napi_ok {
             return Err(Error::from_status(Status::from(status)));
         }
-        unsafe { JsFunction::from_raw(env.raw(), value) }
+        unsafe { JsFunction::from_napi_value(env.raw(), value) }
     }
 }
 
@@ -536,69 +731,88 @@ impl SharedSender {
 }
 
 fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
-    let lookup = env.create_function_from_closure("lookup", |ctx| {
-        if ctx.length < 2 {
-            return ctx.env.get_undefined().map(|v| v.into_unknown());
+    let lookup = env.create_function_from_closure::<(), sys::napi_value, _>("lookup", |ctx| {
+        if ctx.length() < 2 {
+            return map_unknown(undefined(ctx.env));
         }
         let key: String = ctx.get(1)?;
         let input: JsUnknown = ctx.get(0)?;
         if let Some(value) = lookup_js(ctx.env, input, &key)? {
-            Ok(value)
+            Ok(value.raw())
         } else {
-            ctx.env.get_undefined().map(|v| v.into_unknown())
+            map_unknown(undefined(ctx.env))
         }
     })?;
     exports.set_named_property("lookup", lookup)?;
 
-    let append = env.create_function_from_closure("append", |ctx| {
+    let append = env.create_function_from_closure::<(), sys::napi_value, _>("append", |ctx| {
         let left = arg_to_json_value(&ctx, 0)?;
         let right = arg_to_json_value(&ctx, 1)?;
         let result = core_impl::append(&left, &right);
-        json_value_to_js(ctx.env, result)
+        map_unknown(json_value_to_js(ctx.env, result))
     })?;
     exports.set_named_property("append", append)?;
 
-    let exists = env.create_function_from_closure("exists", |ctx| {
+    let exists = env.create_function_from_closure::<(), sys::napi_value, _>("exists", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         let result = core_impl::exists(&value);
-        json_value_to_js(ctx.env, result)
+        map_unknown(json_value_to_js(ctx.env, result))
     })?;
     exports.set_named_property("exists", exists)?;
 
-    let zip_fn = env.create_function_from_closure("zip", |ctx| {
-        let mut values: Vec<JsonValue> = Vec::with_capacity(ctx.length);
-        for index in 0..ctx.length {
+    let zip_fn = env.create_function_from_closure::<(), sys::napi_value, _>("zip", |ctx| {
+        let mut values: Vec<JsonValue> = Vec::with_capacity(ctx.length());
+        for index in 0..ctx.length() {
             values.push(arg_to_json_value(&ctx, index)?);
         }
         let result = core_impl::zip(&values);
-        json_value_to_js(ctx.env, result)
+        map_unknown(json_value_to_js(ctx.env, result))
     })?;
     exports.set_named_property("zip", zip_fn)?;
 
-    let keys = env.create_function_from_closure("keys", |ctx| {
+    let keys = env.create_function_from_closure::<(), sys::napi_value, _>("keys", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         let result = core_impl::keys(&value);
-        json_value_to_js(ctx.env, result)
+        map_unknown(json_value_to_js(ctx.env, result))
     })?;
     exports.set_named_property("keys", keys)?;
 
-    let boolean_fn = env.create_function_from_closure("boolean", |ctx| {
+    let boolean_fn = env.create_function_from_closure::<(), sys::napi_value, _>("boolean", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         let result = core_impl::boolean(&value);
-        json_value_to_js(ctx.env, result)
+        map_unknown(json_value_to_js(ctx.env, result))
     })?;
     exports.set_named_property("boolean", boolean_fn)?;
 
-    let not_fn = env.create_function_from_closure("not", |ctx| {
+    let not_fn = env.create_function_from_closure::<(), sys::napi_value, _>("not", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         let result = core_impl::not(&value);
-        json_value_to_js(ctx.env, result)
+        map_unknown(json_value_to_js(ctx.env, result))
     })?;
     exports.set_named_property("not", not_fn)?;
 
-    let map_fn = env.create_function_from_closure("map", |ctx| {
+    let map_fn = env.create_function_from_closure::<(), JsUnknown, _>("map", |ctx| {
         let array = arg_to_json_value(&ctx, 0)?;
         let func = arg_to_json_value(&ctx, 1)?;
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/workspace/tmp/jsonata_map_debug.log")
+        {
+            match &array {
+                JsonValue::Array(arr) => {
+                    let _ = writeln!(
+                        file,
+                        "map input len={} elements={:?}",
+                        arr.elements.len(),
+                        arr.elements
+                    );
+                }
+                other => {
+                    let _ = writeln!(file, "map input non-array: {:?}", other);
+                }
+            }
+        }
         let focus = function_context_from_this(&ctx)?;
         ctx.env.execute_tokio_future(
             async move {
@@ -611,7 +825,7 @@ fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("map", map_fn)?;
 
-    let each_fn = env.create_function_from_closure("each", |ctx| {
+    let each_fn = env.create_function_from_closure::<(), JsUnknown, _>("each", |ctx| {
         let input = arg_to_json_value(&ctx, 0)?;
         let func = arg_to_json_value(&ctx, 1)?;
         let focus = function_context_from_this(&ctx)?;
@@ -626,9 +840,9 @@ fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("each", each_fn)?;
 
-    let sort_fn = env.create_function_from_closure("sort", |ctx| {
+    let sort_fn = env.create_function_from_closure::<(), JsUnknown, _>("sort", |ctx| {
         let array = arg_to_json_value(&ctx, 0)?;
-        if ctx.length > 1 {
+        if ctx.length() > 1 {
             let comparator: JsUnknown = ctx.get(1)?;
             match comparator.get_type()? {
                 ValueType::Undefined | ValueType::Null => {}
@@ -657,21 +871,24 @@ fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
 }
 
 fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
-    let string_fn = env.create_function_from_closure("string", |ctx| {
-        if ctx.length == 0 {
-            return ctx.env.get_undefined().map(|v| v.into_unknown());
+    let string_fn = env.create_function_from_closure::<(), JsUnknown, _>("string", |ctx| {
+        if ctx.length() == 0 {
+            return undefined(ctx.env);
         }
 
         let first: JsUnknown = ctx.get(0)?;
         match first.get_type()? {
-            ValueType::Undefined => return ctx.env.get_undefined().map(|v| v.into_unknown()),
-            ValueType::Function => return ctx.env.create_string("").map(|v| v.into_unknown()),
+            ValueType::Undefined => return undefined(ctx.env),
+            ValueType::Function => {
+                let js_string = ctx.env.create_string("")?;
+                return js_string.into_unknown(ctx.env);
+            }
             _ => {}
         }
 
-        let prettify = if ctx.length > 1 {
+        let prettify = if ctx.length() > 1 {
             let flag: JsUnknown = ctx.get(1)?;
-            flag.coerce_to_bool()?.get_value()?
+            flag.coerce_to_bool()?
         } else {
             false
         };
@@ -685,7 +902,7 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
 
     exports.set_named_property("string", string_fn)?;
 
-    let substring_fn = env.create_function_from_closure("substring", |ctx| {
+    let substring_fn = env.create_function_from_closure::<(), JsUnknown, _>("substring", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         let start = arg_to_json_value(&ctx, 1)?;
         let length = arg_to_json_value(&ctx, 2)?;
@@ -696,7 +913,7 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("substring", substring_fn)?;
 
-    let substring_before_fn = env.create_function_from_closure("substringBefore", |ctx| {
+    let substring_before_fn = env.create_function_from_closure::<(), JsUnknown, _>("substringBefore", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         let chars = arg_to_json_value(&ctx, 1)?;
         match strings_impl::substring_before(&value, &chars) {
@@ -706,7 +923,7 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("substringBefore", substring_before_fn)?;
 
-    let substring_after_fn = env.create_function_from_closure("substringAfter", |ctx| {
+    let substring_after_fn = env.create_function_from_closure::<(), JsUnknown, _>("substringAfter", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         let chars = arg_to_json_value(&ctx, 1)?;
         match strings_impl::substring_after(&value, &chars) {
@@ -716,7 +933,7 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("substringAfter", substring_after_fn)?;
 
-    let lowercase_fn = env.create_function_from_closure("lowercase", |ctx| {
+    let lowercase_fn = env.create_function_from_closure::<(), JsUnknown, _>("lowercase", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         match strings_impl::lowercase(&value) {
             Ok(result) => json_value_to_js(ctx.env, result),
@@ -725,7 +942,7 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("lowercase", lowercase_fn)?;
 
-    let uppercase_fn = env.create_function_from_closure("uppercase", |ctx| {
+    let uppercase_fn = env.create_function_from_closure::<(), JsUnknown, _>("uppercase", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         match strings_impl::uppercase(&value) {
             Ok(result) => json_value_to_js(ctx.env, result),
@@ -734,7 +951,7 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("uppercase", uppercase_fn)?;
 
-    let length_fn = env.create_function_from_closure("length", |ctx| {
+    let length_fn = env.create_function_from_closure::<(), JsUnknown, _>("length", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         match strings_impl::length(&value) {
             Ok(result) => json_value_to_js(ctx.env, result),
@@ -743,7 +960,7 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("length", length_fn)?;
 
-    let trim_fn = env.create_function_from_closure("trim", |ctx| {
+    let trim_fn = env.create_function_from_closure::<(), JsUnknown, _>("trim", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         match strings_impl::trim(&value) {
             Ok(result) => json_value_to_js(ctx.env, result),
@@ -752,7 +969,7 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("trim", trim_fn)?;
 
-    let pad_fn = env.create_function_from_closure("pad", |ctx| {
+    let pad_fn = env.create_function_from_closure::<(), JsUnknown, _>("pad", |ctx| {
         let value = arg_to_json_value(&ctx, 0)?;
         let width = arg_to_json_value(&ctx, 1)?;
         let char_value = arg_to_json_value(&ctx, 2)?;
@@ -792,7 +1009,7 @@ fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()>
 
     for name in UNIMPLEMENTED {
         let message = format!("Function '{}' is not yet implemented in Rust", name);
-        let func = env.create_function_from_closure(name, move |_| -> napi::Result<JsUnknown> {
+        let func = env.create_function_from_closure::<(), JsUnknown, _>(name, move |_| {
             Err(Error::new(Status::GenericFailure, message.clone()))
         })?;
         exports.set_named_property(*name, func)?;
@@ -802,18 +1019,20 @@ fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()>
 }
 
 #[napi(js_name = "load_functions")]
-pub fn load_functions(env: Env) -> napi::Result<JsObject> {
-    let mut exports = env.create_object()?;
+pub fn load_functions(env: Env) -> napi::Result<JsUnknown<'static>> {
+    let mut exports = Object::new(&env)?;
     register_math(&env, &mut exports)?;
     register_core(&env, &mut exports)?;
     register_strings(&env, &mut exports)?;
     register_unimplemented(&env, &mut exports)?;
-    Ok(exports)
+    let unknown = exports.to_unknown();
+    // SAFETY: the returned value is tied to the lifetime of the Node environment, which
+    // outlives this call as the addon remains loaded.
+    Ok(unsafe { mem::transmute::<JsUnknown<'_>, JsUnknown<'static>>(unknown) })
 }
 
-#[derive(Clone)]
 struct JsFunctionCallable {
-    tsfn: ThreadsafeFunction<Invocation>,
+    tsfn: ThreadsafeFunction<Invocation, JsUnknown<'static>, RawArgList>,
     env_raw: sys::napi_env,
     arity: Option<usize>,
     function_handle: Arc<JsFunctionHandle>,
@@ -831,7 +1050,7 @@ unsafe impl Sync for JsFunctionCallable {}
 
 impl JsFunctionCallable {
     fn new(env: &Env, func: JsFunction) -> napi::Result<Self> {
-        let func_object = unsafe { JsObject::from_raw_unchecked(env.raw(), func.raw()) };
+        let func_object = JsObject::from_raw(env.raw(), func.raw());
         let arity = match func_object.get_named_property::<JsUnknown>("length") {
             Ok(length_value) => match length_value.get_type()? {
                 ValueType::Number => {
@@ -850,17 +1069,18 @@ impl JsFunctionCallable {
         let function_handle = Arc::new(JsFunctionHandle::new(env.raw(), &func)?);
 
         let original = func;
-        let bridge = env.create_function_from_closure("jsonataCallback", move |ctx| {
-            if ctx.length == 0 {
-                return ctx.env.get_undefined().map(|v| v.into_unknown());
+        let bridge = env.create_function_from_closure::<(), JsUnknown, _>("jsonataCallback", move |ctx| {
+            if ctx.length() == 0 {
+                return undefined(ctx.env);
             }
-            let focus_arg: JsUnknown = if ctx.length > 0 {
+            let focus_arg: JsUnknown = if ctx.length() > 0 {
                 ctx.get(0)?
             } else {
-                ctx.env.get_undefined()?.into_unknown()
+                undefined(ctx.env)?
             };
-            let mut call_args: Vec<JsUnknown> = Vec::with_capacity(ctx.length.saturating_sub(1));
-            for index in 1..ctx.length {
+            let arg_count = ctx.length();
+            let mut call_args: Vec<JsUnknown> = Vec::with_capacity(arg_count.saturating_sub(1));
+            for index in 1..arg_count {
                 call_args.push(ctx.get(index)?);
             }
             let focus_type_snapshot = focus_arg.get_type()?;
@@ -868,18 +1088,18 @@ impl JsFunctionCallable {
                 ValueType::Undefined | ValueType::Null => None,
                 _ => Some(focus_arg.coerce_to_object()?),
             };
-            match original.call(this_object.as_ref(), &call_args) {
+            match JsFunctionExt::call(&original, this_object.as_ref(), &call_args) {
                 Ok(result) => Ok(JsUnknown::try_from(result)?),
                 Err(err) => Err(err),
             }
         })?;
 
-        let tsfn = env.create_threadsafe_function(
-            &bridge,
-            0,
-            move |ctx: ThreadSafeCallContext<Invocation>| {
+        let tsfn = bridge
+            .build_threadsafe_function::<Invocation>()
+            .max_queue_size::<0>()
+            .build_callback::<RawArgList, _>(move |ctx: ThreadsafeCallContext<Invocation>| {
                 let Invocation { args, sender, focus } = ctx.value;
-                let mut converted: Vec<JsUnknown> = Vec::with_capacity(args.len() + 1);
+                let mut raw_args: Vec<sys::napi_value> = Vec::with_capacity(args.len() + 1);
 
                 let focus_value = match focus.as_ref() {
                     Some(focus_data) => {
@@ -892,12 +1112,9 @@ impl JsFunctionCallable {
                                     Err(err) => {
                                         sender.send(Err(JsonError::new(
                                             "RUST",
-                                            format!(
-                                                "Failed to convert callback focus: {}",
-                                                err
-                                            ),
+                                            format!("Failed to convert callback focus: {}", err),
                                         )));
-                                        return Ok(Vec::new());
+                                        return Ok(RawArgList { values: Vec::new() });
                                     }
                                 }
                             } else {
@@ -908,7 +1125,7 @@ impl JsFunctionCallable {
                                             "RUST",
                                             format!("Failed to convert callback focus: {}", err),
                                         )));
-                                        return Ok(Vec::new());
+                                        return Ok(RawArgList { values: Vec::new() });
                                     }
                                 }
                             }
@@ -918,35 +1135,31 @@ impl JsFunctionCallable {
                                 Err(err) => {
                                     sender.send(Err(JsonError::new(
                                         "RUST",
-                                        format!(
-                                            "Failed to convert callback focus: {}",
-                                            err
-                                        ),
+                                        format!("Failed to convert callback focus: {}", err),
                                     )));
-                                    return Ok(Vec::new());
+                                    return Ok(RawArgList { values: Vec::new() });
                                 }
                             }
                         }
                     }
-                    None => ctx.env.get_undefined()?.into_unknown(),
+                    None => undefined(&ctx.env)?,
                 };
-                converted.push(focus_value);
+                raw_args.push(focus_value.raw());
 
                 for value in args {
                     match json_value_to_js(&ctx.env, value) {
-                        Ok(js_value) => converted.push(js_value),
+                        Ok(js_value) => raw_args.push(js_value.raw()),
                         Err(err) => {
                             sender.send(Err(JsonError::new(
                                 "RUST",
                                 format!("Failed to convert argument for callback: {}", err),
                             )));
-                            return Ok(Vec::new());
+                            return Ok(RawArgList { values: Vec::new() });
                         }
                     }
                 }
-                Ok(converted)
-            },
-        )?;
+                Ok(RawArgList { values: raw_args })
+            })?;
 
         Ok(Self {
             tsfn,
@@ -958,7 +1171,7 @@ impl JsFunctionCallable {
 
     fn env(&self) -> Env {
         // SAFETY: env_raw is valid for the lifetime of the addon
-        unsafe { Env::from_raw(self.env_raw) }
+        Env::from_raw(self.env_raw)
     }
 
     fn to_js_function(&self, env: &Env) -> napi::Result<JsFunction> {
@@ -979,29 +1192,33 @@ impl JsonCallable for JsFunctionCallable {
             sender: shared_sender.clone(),
             focus: ctx.focus(),
         };
-        let env = self.env();
         let callback_sender = shared_sender.clone();
-        let status = self.tsfn.call_with_return_value::<JsUnknown, _>(
+        let status = self.tsfn.call_with_return_value(
             Ok(invocation),
             ThreadsafeFunctionCallMode::NonBlocking,
-            move |value: JsUnknown| {
-                match value.is_promise() {
-                    Ok(true) => {
-                        if let Err(err) =
-                            attach_promise_handlers(&env, value, callback_sender.clone())
-                        {
+            move |result: napi::Result<JsUnknown>, env: Env| {
+                match result {
+                    Ok(value) => match value.is_promise() {
+                        Ok(true) => {
+                            if let Err(err) =
+                                attach_promise_handlers(&env, value, callback_sender.clone())
+                            {
+                                callback_sender.send(Err(napi_error_to_json("JS", err)));
+                            }
+                        }
+                        Ok(false) => {
+                            let result = js_unknown_to_json_value(&env, value)
+                                .map_err(|err| napi_error_to_json("RUST", err));
+                            callback_sender.send(result);
+                        }
+                        Err(err) => {
                             callback_sender.send(Err(napi_error_to_json("JS", err)));
                         }
-                    }
-                    Ok(false) => {
-                        let result = js_unknown_to_json_value(&env, value)
-                            .map_err(|err| napi_error_to_json("RUST", err));
-                        callback_sender.send(result);
-                    }
+                    },
                     Err(err) => {
                         callback_sender.send(Err(napi_error_to_json("JS", err)));
                     }
-                }
+                };
                 Ok(())
             },
         );
@@ -1041,11 +1258,11 @@ fn attach_promise_handlers(
     let promise_object = promise.coerce_to_object()?;
 
     let resolve_sender = sender.clone();
-    let resolve = env.create_function_from_closure("resolve", move |ctx: CallContext| {
-        let arg = if ctx.length > 0 {
+    let resolve = env.create_function_from_closure::<(), JsUnknown, _>("resolve", move |ctx| {
+        let arg = if ctx.length() > 0 {
             ctx.get::<JsUnknown>(0)?
         } else {
-            ctx.env.get_undefined()?.into_unknown()
+            undefined(ctx.env)?
         };
 
         let result =
@@ -1056,15 +1273,15 @@ fn attach_promise_handlers(
             Err(err) => resolve_sender.send(Err(err)),
         }
 
-        ctx.env.get_undefined()
+        undefined(ctx.env)
     })?;
 
     let reject_sender = sender.clone();
-    let reject = env.create_function_from_closure("reject", move |ctx: CallContext| {
-        let arg = if ctx.length > 0 {
+    let reject = env.create_function_from_closure::<(), JsUnknown, _>("reject", move |ctx| {
+        let arg = if ctx.length() > 0 {
             ctx.get::<JsUnknown>(0)?
         } else {
-            ctx.env.get_undefined()?.into_unknown()
+            undefined(ctx.env)?
         };
 
         let message = arg
@@ -1075,14 +1292,14 @@ fn attach_promise_handlers(
 
         reject_sender.send(Err(JsonError::new("JS", message)));
 
-        ctx.env.get_undefined()
+        undefined(ctx.env)
     })?;
 
-    let resolve_unknown = resolve.into_unknown();
-    let reject_unknown = reject.into_unknown();
+    let resolve_unknown = resolve.to_unknown();
+    let reject_unknown = reject.to_unknown();
 
-    let then_fn: JsFunction = promise_object.get_named_property("then")?;
-    then_fn.call(Some(&promise_object), &[resolve_unknown, reject_unknown])?;
+    let then_fn: JsFunction = JsObjectExt::get_named_property(&promise_object, "then")?;
+    JsFunctionExt::call(&then_fn, Some(&promise_object), &[resolve_unknown, reject_unknown])?;
 
     Ok(())
 }

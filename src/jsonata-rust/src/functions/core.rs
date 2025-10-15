@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::fs::OpenOptions;
+use std::io::{stderr, Write};
 
 use crate::types::{
     FunctionContext, JsonArray, JsonError, JsonFunction, JsonObject, JsonValue,
@@ -337,6 +339,26 @@ pub async fn map(
     let mut results = Vec::with_capacity(arr.elements.len());
 
     for (index, element) in arr.elements.iter().enumerate() {
+        if index == 0 {
+            eprintln!(
+                "[debug] $map: first element = {:?}, callable arity = {:?}",
+                element,
+                callable.arity()
+            );
+            let _ = stderr().flush();
+            if let Ok(mut file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/jsonata_map_debug.log")
+            {
+                let _ = writeln!(
+                    file,
+                    "core map first element: {:?}, arity {:?}",
+                    element,
+                    callable.arity()
+                );
+            }
+        }
         let args = build_hof_args(
             &callable,
             element.clone(),
