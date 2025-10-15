@@ -75,6 +75,7 @@ name = "jsonata_rust"
 version = "0.1.0"
 dependencies = [
  "rand",
+ "ryu",
  "serde",
  "serde_json",
 ]

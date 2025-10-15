@@ -1,6 +1,6 @@
 use std::fmt;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct JsonArray {
     pub elements: Vec<JsonValue>,
     pub is_sequence: bool,
@@ -25,10 +25,10 @@ impl JsonArray {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct JsonObject(pub Vec<(String, JsonValue)>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum JsonValue {
     Undefined,
     Null,

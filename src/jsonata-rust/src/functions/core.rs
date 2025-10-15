@@ -55,7 +55,7 @@ pub fn append(left: &JsonValue, right: &JsonValue) -> JsonValue {
         value => combined.push(value.clone()),
     }
 
-    JsonValue::Array(JsonArray::new(combined, true, false))
+    JsonValue::Array(JsonArray::new(combined, false, false))
 }
 
 pub fn exists(value: &JsonValue) -> JsonValue {

@@ -1,24 +1,311 @@
 use crate::types::{JsonArray, JsonError, JsonObject, JsonValue};
+use ryu::Buffer;
+use serde::Serialize;
+use serde_json::ser::{CompactFormatter, Formatter, PrettyFormatter, Serializer};
 use serde_json::{Map, Number, Value};
+use std::io;
 
-fn to_serde_value(value: &JsonValue) -> Value {
+struct JsonataFormatter<F> {
+    inner: F,
+}
+
+impl<F> JsonataFormatter<F> {
+    fn new(inner: F) -> Self {
+        Self { inner }
+    }
+}
+
+impl<F: Formatter> Formatter for JsonataFormatter<F> {
+    fn write_null<W>(&mut self, writer: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_null(writer)
+    }
+
+    fn write_bool<W>(&mut self, writer: &mut W, value: bool) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_bool(writer, value)
+    }
+
+    fn write_i8<W>(&mut self, writer: &mut W, value: i8) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_i8(writer, value)
+    }
+
+    fn write_i16<W>(&mut self, writer: &mut W, value: i16) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_i16(writer, value)
+    }
+
+    fn write_i32<W>(&mut self, writer: &mut W, value: i32) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_i32(writer, value)
+    }
+
+    fn write_i64<W>(&mut self, writer: &mut W, value: i64) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_i64(writer, value)
+    }
+
+    fn write_i128<W>(&mut self, writer: &mut W, value: i128) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_i128(writer, value)
+    }
+
+    fn write_u8<W>(&mut self, writer: &mut W, value: u8) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_u8(writer, value)
+    }
+
+    fn write_u16<W>(&mut self, writer: &mut W, value: u16) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_u16(writer, value)
+    }
+
+    fn write_u32<W>(&mut self, writer: &mut W, value: u32) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_u32(writer, value)
+    }
+
+    fn write_u64<W>(&mut self, writer: &mut W, value: u64) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_u64(writer, value)
+    }
+
+    fn write_u128<W>(&mut self, writer: &mut W, value: u128) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_u128(writer, value)
+    }
+
+    fn write_f32<W>(&mut self, writer: &mut W, value: f32) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_f32(writer, value)
+    }
+
+    fn write_f64<W>(&mut self, writer: &mut W, value: f64) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        write_js_number(writer, value)
+    }
+
+    fn write_number_str<W>(&mut self, writer: &mut W, value: &str) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_number_str(writer, value)
+    }
+
+    fn begin_string<W>(&mut self, writer: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.begin_string(writer)
+    }
+
+    fn end_string<W>(&mut self, writer: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.end_string(writer)
+    }
+
+    fn write_string_fragment<W>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_string_fragment(writer, fragment)
+    }
+
+    fn write_char_escape<W>(
+        &mut self,
+        writer: &mut W,
+        char_escape: serde_json::ser::CharEscape,
+    ) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_char_escape(writer, char_escape)
+    }
+
+    fn write_byte_array<W>(&mut self, writer: &mut W, value: &[u8]) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.write_byte_array(writer, value)
+    }
+
+    fn begin_array<W>(&mut self, writer: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.begin_array(writer)
+    }
+
+    fn end_array<W>(&mut self, writer: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.end_array(writer)
+    }
+
+    fn begin_array_value<W>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.begin_array_value(writer, first)
+    }
+
+    fn end_array_value<W>(&mut self, writer: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.end_array_value(writer)
+    }
+
+    fn begin_object<W>(&mut self, writer: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.begin_object(writer)
+    }
+
+    fn end_object<W>(&mut self, writer: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.end_object(writer)
+    }
+
+    fn begin_object_key<W>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.begin_object_key(writer, first)
+    }
+
+    fn end_object_key<W>(&mut self, writer: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.end_object_key(writer)
+    }
+
+    fn begin_object_value<W>(&mut self, writer: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.begin_object_value(writer)
+    }
+
+    fn end_object_value<W>(&mut self, writer: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.end_object_value(writer)
+    }
+}
+
+fn format_js_number(value: f64) -> String {
+    if value == 0.0 {
+        return "0".to_owned();
+    }
+
+    if value.fract() == 0.0 && value.abs() < 1e21 {
+        let formatted = format!("{:.0}", value);
+        return if formatted == "-0" {
+            "0".to_owned()
+        } else {
+            formatted
+        };
+    }
+
+    let mut buffer = Buffer::new();
+    let mut formatted = buffer.format_finite(value).to_owned();
+    if let Some(pos) = formatted.find('e') {
+        let exponent = &formatted[pos + 1..];
+        if !exponent.starts_with('-') && !exponent.starts_with('+') {
+            formatted.insert(pos + 1, '+');
+        }
+    }
+    if formatted == "-0" {
+        formatted = "0".to_owned();
+    }
+    formatted
+}
+
+fn write_js_number<W>(writer: &mut W, value: f64) -> io::Result<()>
+where
+    W: ?Sized + io::Write,
+{
+    let formatted = format_js_number(value);
+    writer.write_all(formatted.as_bytes())
+}
+
+fn to_jsonata_value(value: &JsonValue) -> Result<Value, JsonError> {
     match value {
-        JsonValue::Undefined => Value::Null,
-        JsonValue::Null => Value::Null,
-        JsonValue::Bool(flag) => Value::Bool(*flag),
-        JsonValue::Number(num) => Number::from_f64(*num)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
-        JsonValue::String(text) => Value::String(text.clone()),
+        JsonValue::Undefined => Ok(Value::Null),
+        JsonValue::Null => Ok(Value::Null),
+        JsonValue::Bool(flag) => Ok(Value::Bool(*flag)),
+        JsonValue::Number(num) => {
+            if !num.is_finite() {
+                return Err(JsonError::new(
+                    "D3001",
+                    format!("Unable to represent number {}", num),
+                ));
+            }
+            Ok(Number::from_f64(*num)
+                .map(Value::Number)
+                .unwrap_or(Value::Null))
+        }
+        JsonValue::String(text) => Ok(Value::String(text.clone())),
         JsonValue::Array(JsonArray { elements, .. }) => {
-            Value::Array(elements.iter().map(to_serde_value).collect())
+            let converted = elements
+                .iter()
+                .map(|element| {
+                    if matches!(element, JsonValue::Undefined) {
+                        Ok(Value::Null)
+                    } else {
+                        to_jsonata_value(element)
+                    }
+                })
+                .collect::<Result<Vec<Value>, JsonError>>()?;
+            Ok(Value::Array(converted))
         }
         JsonValue::Object(JsonObject(entries)) => {
             let mut map = Map::new();
             for (key, entry_value) in entries {
-                map.insert(key.clone(), to_serde_value(entry_value));
+                if matches!(entry_value, JsonValue::Undefined) {
+                    continue;
+                }
+                map.insert(key.clone(), to_jsonata_value(entry_value)?);
             }
-            Value::Object(map)
+            Ok(Value::Object(map))
         }
     }
 }
@@ -140,16 +427,26 @@ pub fn string(value: &JsonValue, prettify: bool) -> Result<JsonValue, JsonError>
         JsonValue::Undefined => Ok(JsonValue::Undefined),
         JsonValue::Null => Ok(JsonValue::String("null".to_owned())),
         JsonValue::Bool(flag) => Ok(JsonValue::String(flag.to_string())),
-        JsonValue::Number(num) => Ok(JsonValue::String(num.to_string())),
+        JsonValue::Number(num) => Ok(JsonValue::String(format_js_number(*num))),
         JsonValue::String(text) => Ok(JsonValue::String(text.clone())),
         JsonValue::Array(_) | JsonValue::Object(_) => {
-            let serde_value = to_serde_value(target);
-            let result = if prettify {
-                serde_json::to_string_pretty(&serde_value)
+            let serde_value = to_jsonata_value(target)?;
+            let mut buffer = Vec::new();
+            if prettify {
+                let formatter = JsonataFormatter::new(PrettyFormatter::with_indent(b"  "));
+                let mut serializer = Serializer::with_formatter(&mut buffer, formatter);
+                serde_value
+                    .serialize(&mut serializer)
+                    .map_err(|err| JsonError::new("D3137", err.to_string()))?;
             } else {
-                serde_json::to_string(&serde_value)
+                let formatter = JsonataFormatter::new(CompactFormatter {});
+                let mut serializer = Serializer::with_formatter(&mut buffer, formatter);
+                serde_value
+                    .serialize(&mut serializer)
+                    .map_err(|err| JsonError::new("D3137", err.to_string()))?;
             }
-            .map_err(|err| JsonError::new("D3137", err.to_string()))?;
+            let result = String::from_utf8(buffer)
+                .map_err(|err| JsonError::new("D3137", err.to_string()))?;
             Ok(JsonValue::String(result))
         }
     }
@@ -307,6 +604,35 @@ mod tests {
         let value = JsonValue::Number(42.0);
         let result = string(&value, false).unwrap();
         assert!(matches!(result, JsonValue::String(ref s) if s == "42"));
+    }
+
+    #[test]
+    fn string_array_of_numbers_matches_json() {
+        let array = JsonValue::Array(JsonArray::new(
+            vec![JsonValue::Number(1.0), JsonValue::Number(2.0)],
+            false,
+            false,
+        ));
+        let result = string(&array, false).unwrap();
+        assert!(matches!(result, JsonValue::String(ref s) if s == "[1,2]"));
+    }
+
+    #[test]
+    fn string_single_element_array_preserves_brackets() {
+        let array = JsonValue::Array(JsonArray::new(
+            vec![JsonValue::Number(2.0)],
+            false,
+            false,
+        ));
+        let result = string(&array, false).unwrap();
+        assert!(matches!(result, JsonValue::String(ref s) if s == "[2]"));
+    }
+
+    #[test]
+    fn string_large_number_uses_exponent_plus() {
+        let value = JsonValue::Number(1e21);
+        let result = string(&value, false).unwrap();
+        assert!(matches!(result, JsonValue::String(ref s) if s == "1e+21"));
     }
 
     #[test]

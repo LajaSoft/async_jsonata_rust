@@ -49,6 +49,25 @@ fn adjust_negative_zero(value: f64) -> f64 {
     }
 }
 
+fn shift_decimal(value: f64, shift: f64) -> f64 {
+    if shift == 0.0 || !value.is_finite() {
+        return value;
+    }
+
+    let value_string = value.to_string();
+    let mut parts = value_string.split('e');
+    let base = parts.next().unwrap_or("0");
+    let exponent = parts
+        .next()
+        .and_then(|part| part.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let new_exponent = exponent + shift;
+    let combined = format!("{}e{}", base, new_exponent);
+    combined
+        .parse::<f64>()
+        .unwrap_or(value * 10_f64.powf(shift))
+}
+
 pub fn random() -> f64 {
     let mut rng = rand::thread_rng();
     rng.gen::<f64>()
@@ -70,15 +89,22 @@ pub fn round(value: Option<f64>, precision: Option<f64>) -> Option<f64> {
     let value = value?;
     let precision = precision.filter(|p| *p != 0.0 && !p.is_nan());
 
+    let mut shifted = value;
     if let Some(p) = precision {
-        let factor = 10_f64.powf(p);
-        let shifted = value * factor;
-        let rounded = shifted.round_ties_even();
-        let result = adjust_negative_zero(rounded / factor);
-        Some(result)
-    } else {
-        Some(adjust_negative_zero(value.round_ties_even()))
+        shifted = shift_decimal(value, p);
     }
+
+    let mut result = shifted.round();
+    let diff = result - shifted;
+    if diff.abs() == 0.5 && (result % 2.0).abs() == 1.0 {
+        result -= 1.0;
+    }
+
+    if let Some(p) = precision {
+        result = shift_decimal(result, -p);
+    }
+
+    Some(adjust_negative_zero(result))
 }
 
 pub fn sqrt(value: Option<f64>) -> Result<Option<f64>, JsonError> {
