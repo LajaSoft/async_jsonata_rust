@@ -138,7 +138,9 @@ pub struct FunctionContext {
 
 impl FunctionContext {
     pub fn empty() -> Self {
-        Self { focus: None }
+        Self { 
+            focus: None,
+        }
     }
 
     pub fn with_focus(focus: JsonataFocus) -> Self {

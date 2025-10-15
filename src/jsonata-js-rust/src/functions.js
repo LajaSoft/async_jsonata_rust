@@ -47,11 +47,7 @@
         const upstream = upstreamFunctions[name];
         const params = extractParameters(upstream);
         const argsList = params.join(', ');
-        const factory = new Function(
-            'impl',
-            `return function(${argsList}) { return impl.apply(this, arguments); };`
-        );
-        const invoke = function (...args) {
+        const wrapped = function (...args) {
             try {
                 const result = impl.apply(this, args);
                 if (result && typeof result.then === 'function') {
@@ -60,7 +56,7 @@
                         if (typeof err === 'object' && err !== null) {
                             if (err.toString() === '[object Object]' || err.message === '[object Object]') {
                                 // Try to extract useful information from other properties
-                                console.error('Encountered [object Object] error:', err);
+                                // Log error for debugging but don't use console in production
                                 // Create a more descriptive error
                                 const newErr = new Error('Promise rejection with unclear error details');
                                 newErr.code = 'GenericFailure';
@@ -79,12 +75,23 @@
                 throw err;
             }
         };
-        const wrapped = factory(invoke);
 
         try {
             Object.defineProperty(wrapped, 'name', {
                 value: name,
                 configurable: true,
+            });
+            // Add a special marker for Rust to detect built-in functions
+            Object.defineProperty(wrapped, '_rustBuiltin', {
+                value: name,
+                configurable: false,
+                enumerable: false,
+            });
+            // Store reference to original implementation
+            Object.defineProperty(wrapped, '_rustImpl', {
+                value: impl,
+                configurable: false,
+                enumerable: false,
             });
         } catch (err) {
             // ignore property definition issues

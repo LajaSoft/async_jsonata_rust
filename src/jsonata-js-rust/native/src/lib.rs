@@ -13,6 +13,7 @@ use jsonata_rust::types::{
     CallbackHandle, FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction,
     JsonObject, JsonValue, JsonataFocus,
 };
+use jsonata_rust::registry;
 use std::any::Any;
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
@@ -305,6 +306,91 @@ fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Result<JsonVal
         )),
         ValueType::Function => {
             let js_func = JsFunction::try_from_unknown(value)?;
+            
+            // Check if this is a built-in Rust function 
+            if let Ok(js_obj) = js_func.coerce_to_object() {
+                // First try _rustBuiltin marker
+                if let Ok(builtin_name_value) = js_obj.get_named_property::<JsUnknown>("_rustBuiltin") {
+                    if let Ok(name_str) = builtin_name_value.coerce_to_string() {
+                        if let Ok(utf8_str) = name_str.into_utf8() {
+                            if let Ok(name) = utf8_str.as_str() {
+                                eprintln!("[DEBUG] Found _rustBuiltin marker for: '{}'", name);
+                                
+                                // Only handle if the name is not empty/undefined
+                                if !name.is_empty() && name != "undefined" {
+                                    // Try to get built-in function
+                                    if let Some(builtin) = registry::lookup_builtin(name) {
+                                        eprintln!("[DEBUG] Using built-in function for: {}", name);
+                                        return Ok(JsonValue::Function(builtin));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Second try: check toString() for [native code] signature
+                if let Ok(to_string_fn) = js_obj.get_named_property::<JsFunction>("toString") {
+                    if let Ok(to_string_result) = JsFunctionExt::call(&to_string_fn, Some(&js_obj), &[]) {
+                        if let Ok(string_result) = to_string_result.coerce_to_string() {
+                            if let Ok(utf8_result) = string_result.into_utf8() {
+                                if let Ok(string_content) = utf8_result.as_str() {
+                                    eprintln!("[DEBUG] Function toString(): '{}'", string_content);
+                                    // Look for our custom [native code] pattern and extract function name
+                                    if string_content.contains("[native code]") {
+                                        // Extract function name from patterns like "function boolean(...) { [native code] }"
+                                        if let Some(start) = string_content.find("function ") {
+                                            let after_function = &string_content[start + 9..];
+                                            if let Some(end) = after_function.find('(') {
+                                                let func_name = after_function[..end].trim();
+                                                if !func_name.is_empty() {
+                                                    eprintln!("[DEBUG] Extracted function name from toString: '{}'", func_name);
+                                                    if let Some(builtin) = registry::lookup_builtin(func_name) {
+                                                        eprintln!("[DEBUG] Using built-in function for toString name: {}", func_name);
+                                                        return Ok(JsonValue::Function(builtin));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Third try: look for _rustImpl property that contains the original function
+                if let Ok(impl_value) = js_obj.get_named_property::<JsUnknown>("_rustImpl") {
+                    if impl_value.get_type()? == ValueType::Function {
+                        eprintln!("[DEBUG] Found _rustImpl property, checking recursively");
+                        // Recursively check the impl function
+                        let impl_result = js_unknown_to_json_value(env, impl_value)?;
+                        if let JsonValue::Function(_) = impl_result {
+                            return Ok(impl_result);
+                        }
+                    }
+                }
+                
+                // Fourth try: function name property
+                if let Ok(name_value) = js_obj.get_named_property::<JsUnknown>("name") {
+                    if let Ok(name_str) = name_value.coerce_to_string() {
+                        if let Ok(utf8_str) = name_str.into_utf8() {
+                            if let Ok(name) = utf8_str.as_str() {
+                                eprintln!("[DEBUG] Checking function name: '{}'", name);
+                                
+                                // Check if it's a known built-in
+                                if let Some(builtin) = registry::lookup_builtin(name) {
+                                    eprintln!("[DEBUG] Using built-in function for name: {}", name);
+                                    return Ok(JsonValue::Function(builtin));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Fallback to JS callable
+            eprintln!("[DEBUG] Using JS callable for function");
             let callable = JsFunctionCallable::new(env, js_func)?;
             Ok(JsonValue::Function(JsonFunction::new(Arc::new(callable))))
         }
@@ -1322,6 +1408,7 @@ impl JsonCallable for JsFunctionCallable {
         ctx: FunctionContext,
         args: Vec<JsonValue>,
     ) -> BoxFuture<'static, JsonCallResult> {
+        eprintln!("[DEBUG] JsFunctionCallable::call with args: {:?}", args);
         let (sender, receiver) = oneshot::channel();
         let shared_sender = SharedSender::new(sender);
         let invocation = Invocation {
@@ -1334,28 +1421,35 @@ impl JsonCallable for JsFunctionCallable {
             Ok(invocation),
             ThreadsafeFunctionCallMode::NonBlocking,
             move |result: napi::Result<JsRawValue>, env: Env| {
+                eprintln!("[DEBUG] ThreadsafeFunction callback result: {:?}", result.is_ok());
                 match result {
                     Ok(raw) => {
                         let value = unsafe { JsUnknown::from_raw_unchecked(env.raw(), raw.0) };
                         match value.is_promise() {
                             Ok(true) => {
+                                eprintln!("[DEBUG] Value is a promise, attaching handlers");
                                 if let Err(err) =
                                     attach_promise_handlers(&env, value, callback_sender.clone())
                                 {
+                                    eprintln!("[DEBUG] Error attaching promise handlers: {:?}", err);
                                     callback_sender.send(Err(napi_error_to_json("JS", err)));
                                 }
                             }
                             Ok(false) => {
+                                eprintln!("[DEBUG] Value is not a promise, converting directly");
                                 let result = js_unknown_to_json_value(&env, value)
                                     .map_err(|err| napi_error_to_json("RUST", err));
+                                eprintln!("[DEBUG] Conversion result: {:?}", result.is_ok());
                                 callback_sender.send(result);
                             }
                             Err(err) => {
+                                eprintln!("[DEBUG] Error checking if value is promise: {:?}", err);
                                 callback_sender.send(Err(napi_error_to_json("JS", err)));
                             }
                         }
                     }
                     Err(err) => {
+                        eprintln!("[DEBUG] ThreadsafeFunction callback error: {:?}", err);
                         callback_sender.send(Err(napi_error_to_json("JS", err)));
                     }
                 };
@@ -1424,13 +1518,56 @@ fn attach_promise_handlers(
             undefined(ctx.env)?
         };
 
-        let message = arg
-            .coerce_to_string()
-            .and_then(|value| value.into_utf8())
-            .and_then(|utf| utf.as_str().map(|s| s.to_owned()))
-            .unwrap_or_else(|_| "Promise rejected".to_owned());
+        // Try to extract error information from JavaScript Error object
+        let (code, message) = if let Ok(obj) = arg.coerce_to_object() {
+            eprintln!("[DEBUG] Promise reject with object, checking properties");
+            
+            // Try to get error code
+            let code = if obj.has_named_property("code")? {
+                let code_prop: JsUnknown = obj.get_named_property("code")?;
+                code_prop.coerce_to_string()
+                    .and_then(|s| s.into_utf8())
+                    .and_then(|utf| utf.as_str().map(|s| s.to_owned()))
+                    .unwrap_or_else(|_| "JS".to_owned())
+            } else {
+                "JS".to_owned()
+            };
+            
+            // Try to get error message
+            let message = if obj.has_named_property("message")? {
+                let msg_prop: JsUnknown = obj.get_named_property("message")?;
+                msg_prop.coerce_to_string()
+                    .and_then(|s| s.into_utf8())
+                    .and_then(|utf| utf.as_str().map(|s| s.to_owned()))
+                    .unwrap_or_else(|_| "Promise rejected with object".to_owned())
+            } else {
+                "Promise rejected with object".to_owned()
+            };
+            
+            eprintln!("[DEBUG] Extracted error: code={}, message={}", code, message);
+            (code, message)
+        } else {
+            // Fallback to string conversion
+            let message = arg
+                .coerce_to_string()
+                .and_then(|value| value.into_utf8())
+                .and_then(|utf| utf.as_str().map(|s| s.to_owned()))
+                .unwrap_or_else(|_| "Promise rejected".to_owned());
+            ("JS".to_owned(), message)
+        };
 
-        reject_sender.send(Err(JsonError::new("JS", message)));
+        // Convert code to static str for JsonError::new  
+        let static_code = if code == "D3138" {
+            "D3138"
+        } else if code == "D3139" {
+            "D3139"
+        } else if code.starts_with('D') && code.len() == 5 {
+            // For other D-codes, we'll use JS as fallback since we can't convert String to &'static str
+            "JS"
+        } else {
+            "JS"
+        };
+        reject_sender.send(Err(JsonError::new(static_code, message)));
 
         map_unknown(undefined(ctx.env))
     })?;

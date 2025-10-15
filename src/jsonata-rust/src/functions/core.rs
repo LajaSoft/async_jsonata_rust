@@ -474,14 +474,29 @@ pub async fn single(
                 Some(JsonValue::Number(index as f64)),
                 Some(container.clone()),
             );
-            let result = callable.call(ctx.clone(), args).await?;
-            matches!(boolean(&result), JsonValue::Bool(true))
+            eprintln!("[DEBUG] $single calling function for index {}, entry: {:?}", index, entry);
+            let result = callable.call(ctx.clone(), args).await;
+            match result {
+                Ok(value) => {
+                    let boolean_result = boolean(&value);
+                    let is_match = matches!(boolean_result, JsonValue::Bool(true));
+                    eprintln!("[DEBUG] $single index {}: function returned {:?}, boolean: {:?}, matches: {}", 
+                             index, value, boolean_result, is_match);
+                    is_match
+                }
+                Err(err) => {
+                    eprintln!("[DEBUG] $single index {}: function call failed: {:?}", index, err);
+                    return Err(err);
+                }
+            }
         } else {
             true
         };
 
         if matches {
+            eprintln!("[DEBUG] $single: found match at index {}", index);
             if found.is_some() {
+                eprintln!("[DEBUG] $single: multiple matches detected, returning D3138");
                 return Err(JsonError::new(
                     "D3138",
                     format!(
