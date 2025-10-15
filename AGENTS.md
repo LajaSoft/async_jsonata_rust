@@ -73,3 +73,8 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
 - Decide between `napi-rs` vs `neon` vs pure WASM bridge for the Node adapter.
 - Determine the canonical async runtime (`tokio` vs `async-std`) before committing to APIs.
 - Explore automatic differential testing against the JavaScript interpreter for fuzzed expressions.
+
+## Current Action Items
+- Extend the N-API bridge with a unified callable wrapper that can represent JSONata callbacks as Rust-owned functions (sync and async), allowing the JS suite for user-defined functions to run natively again.
+- Re-enable the skipped user-defined-function tests once the wrapper lands to keep parity coverage for async evaluation paths.
+- Finish porting the remaining higher-order helpers in Rust (`$map`, `$each`, `$number`, partial application helpers) so the hybrid runtime can clear the dependent conformance groups.
