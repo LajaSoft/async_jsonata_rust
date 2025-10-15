@@ -3,6 +3,9 @@ use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::{stderr, Write};
 
+use rand::Rng;
+
+use crate::functions::strings;
 use crate::types::{
     FunctionContext, JsonArray, JsonError, JsonFunction, JsonObject, JsonValue,
 };
@@ -388,6 +391,185 @@ pub async fn map(
     Ok(JsonValue::Array(JsonArray::new(results, true, false)))
 }
 
+pub async fn filter(
+    ctx: FunctionContext,
+    array: JsonValue,
+    func: JsonValue,
+) -> Result<JsonValue, JsonError> {
+    let arr = match array {
+        JsonValue::Undefined => return Ok(JsonValue::Undefined),
+        JsonValue::Array(arr) => arr,
+        _ => {
+            return Err(JsonError::new(
+                "D3050",
+                "$filter() expects the first argument to be an array",
+            ))
+        }
+    };
+
+    let callable = match func {
+        JsonValue::Function(func) => func,
+        _ => {
+            return Err(JsonError::new(
+                "D3050",
+                "$filter() expects the second argument to be a function",
+            ))
+        }
+    };
+
+    let container = JsonValue::Array(arr.clone());
+    let mut results: Vec<JsonValue> = Vec::new();
+
+    for (index, entry) in arr.elements.iter().enumerate() {
+        let args = build_hof_args(
+            &callable,
+            entry.clone(),
+            Some(JsonValue::Number(index as f64)),
+            Some(container.clone()),
+        );
+        let predicate = callable.call(ctx.clone(), args).await?;
+        if matches!(boolean(&predicate), JsonValue::Bool(true)) {
+            results.push(entry.clone());
+        }
+    }
+
+    Ok(JsonValue::Array(JsonArray::new(results, true, false)))
+}
+
+pub async fn single(
+    ctx: FunctionContext,
+    array: JsonValue,
+    predicate: JsonValue,
+) -> Result<JsonValue, JsonError> {
+    let arr = match array {
+        JsonValue::Undefined => return Ok(JsonValue::Undefined),
+        JsonValue::Array(arr) => arr,
+        _ => {
+            return Err(JsonError::new(
+                "D3050",
+                "$single() expects the first argument to be an array",
+            ))
+        }
+    };
+
+    let callable = match predicate {
+        JsonValue::Undefined => None,
+        JsonValue::Function(func) => Some(func),
+        _ => {
+            return Err(JsonError::new(
+                "D3050",
+                "$single() expects the second argument to be a function",
+            ))
+        }
+    };
+
+    let container = JsonValue::Array(arr.clone());
+    let mut found: Option<JsonValue> = None;
+
+    for (index, entry) in arr.elements.iter().enumerate() {
+        let matches = if let Some(callable) = &callable {
+            let args = build_hof_args(
+                callable,
+                entry.clone(),
+                Some(JsonValue::Number(index as f64)),
+                Some(container.clone()),
+            );
+            let result = callable.call(ctx.clone(), args).await?;
+            matches!(boolean(&result), JsonValue::Bool(true))
+        } else {
+            true
+        };
+
+        if matches {
+            if found.is_some() {
+                return Err(JsonError::new(
+                    "D3138",
+                    format!(
+                        "$single() found more than one matching element (conflict at index {})",
+                        index
+                    ),
+                ));
+            }
+            found = Some(entry.clone());
+        }
+    }
+
+    found.ok_or_else(|| {
+        JsonError::new(
+            "D3139",
+            "$single() did not find a matching element in the supplied sequence",
+        )
+    })
+}
+
+pub async fn fold_left(
+    ctx: FunctionContext,
+    sequence: JsonValue,
+    func: JsonValue,
+    init: JsonValue,
+) -> Result<JsonValue, JsonError> {
+    let array = match sequence {
+        JsonValue::Undefined => return Ok(JsonValue::Undefined),
+        JsonValue::Array(arr) => arr,
+        _ => {
+            return Err(JsonError::new(
+                "D3050",
+                "$foldLeft() expects the first argument to be an array",
+            ))
+        }
+    };
+
+    let callable = match func {
+        JsonValue::Function(func) => func,
+        _ => {
+            return Err(JsonError::new(
+                "D3050",
+                "$foldLeft() expects the second argument to be a function",
+            ))
+        }
+    };
+
+    let arity = callable.arity().unwrap_or(2);
+    if arity < 2 {
+        return Err(JsonError::new(
+            "D3050",
+            "$foldLeft() expects the function argument to accept at least two parameters",
+        ));
+    }
+
+    let mut index;
+    let mut accumulator;
+
+    if matches!(init, JsonValue::Undefined) {
+        if array.elements.is_empty() {
+            return Ok(JsonValue::Undefined);
+        }
+        accumulator = array.elements[0].clone();
+        index = 1;
+    } else {
+        accumulator = init;
+        index = 0;
+    }
+
+    let container = JsonValue::Array(array.clone());
+
+    while index < array.elements.len() {
+        let mut args = Vec::new();
+        args.push(accumulator.clone());
+        args.push(array.elements[index].clone());
+        if arity >= 3 {
+            args.push(JsonValue::Number(index as f64));
+        }
+        if arity >= 4 {
+            args.push(container.clone());
+        }
+        accumulator = callable.call(ctx.clone(), args).await?;
+        index += 1;
+    }
+
+    Ok(accumulator)
+}
+
 pub async fn each(
     ctx: FunctionContext,
     input: JsonValue,
@@ -448,6 +630,227 @@ pub async fn each(
     Ok(JsonValue::Array(JsonArray::new(results, true, false)))
 }
 
+pub async fn sift(
+    ctx: FunctionContext,
+    input: JsonValue,
+    func: JsonValue,
+) -> Result<JsonValue, JsonError> {
+    let callable = match func {
+        JsonValue::Function(func) => func,
+        _ => {
+            return Err(JsonError::new(
+                "D3050",
+                "$sift() expects the second argument to be a function",
+            ))
+        }
+    };
+
+    match input {
+        JsonValue::Undefined => Ok(JsonValue::Undefined),
+        JsonValue::Object(JsonObject(entries)) => {
+            let container = JsonValue::Object(JsonObject(entries.clone()));
+            let mut result: Vec<(String, JsonValue)> = Vec::new();
+            for (key, value) in entries {
+                let args = build_hof_args(
+                    &callable,
+                    value.clone(),
+                    Some(JsonValue::String(key.clone())),
+                    Some(container.clone()),
+                );
+                let predicate = callable.call(ctx.clone(), args).await?;
+                if matches!(boolean(&predicate), JsonValue::Bool(true)) {
+                    result.push((key, value));
+                }
+            }
+            if result.is_empty() {
+                Ok(JsonValue::Undefined)
+            } else {
+                Ok(JsonValue::Object(JsonObject(result)))
+            }
+        }
+        JsonValue::Array(array) => {
+            let container = JsonValue::Array(array.clone());
+            let mut result: Vec<(String, JsonValue)> = Vec::new();
+            for (index, value) in array.elements.iter().enumerate() {
+                let key = index.to_string();
+                let args = build_hof_args(
+                    &callable,
+                    value.clone(),
+                    Some(JsonValue::String(key.clone())),
+                    Some(container.clone()),
+                );
+                let predicate = callable.call(ctx.clone(), args).await?;
+                if matches!(boolean(&predicate), JsonValue::Bool(true)) {
+                    result.push((key, value.clone()));
+                }
+            }
+            if result.is_empty() {
+                Ok(JsonValue::Undefined)
+            } else {
+                Ok(JsonValue::Object(JsonObject(result)))
+            }
+        }
+        _ => Err(JsonError::new(
+            "D3050",
+            "$sift() expects the first argument to be an object or array",
+        )),
+    }
+}
+
+pub fn spread(value: &JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Undefined => JsonValue::Undefined,
+        JsonValue::Array(array) => {
+            let mut aggregated: Vec<JsonValue> = Vec::new();
+            for element in &array.elements {
+                let expanded = spread(element);
+                match expanded {
+                    JsonValue::Array(JsonArray { elements, .. }) => {
+                        aggregated.extend(elements);
+                    }
+                    other => aggregated.push(other),
+                }
+            }
+            JsonValue::Array(JsonArray::new(aggregated, true, false))
+        }
+        JsonValue::Object(JsonObject(entries)) => {
+            let mut aggregated: Vec<JsonValue> = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                aggregated.push(JsonValue::Object(JsonObject(vec![(
+                    key.clone(),
+                    value.clone(),
+                )])));
+            }
+            JsonValue::Array(JsonArray::new(aggregated, true, false))
+        }
+        other => other.clone(),
+    }
+}
+
+pub fn merge(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    match value {
+        JsonValue::Undefined => Ok(JsonValue::Undefined),
+        JsonValue::Array(array) => {
+            let mut merged: Vec<(String, JsonValue)> = Vec::new();
+            for element in &array.elements {
+                if let JsonValue::Object(JsonObject(entries)) = element {
+                    for (key, val) in entries {
+                        if let Some((_, existing)) =
+                            merged.iter_mut().find(|(existing_key, _)| existing_key == key)
+                        {
+                            *existing = val.clone();
+                        } else {
+                            merged.push((key.clone(), val.clone()));
+                        }
+                    }
+                }
+            }
+            Ok(JsonValue::Object(JsonObject(merged)))
+        }
+        _ => Err(JsonError::new(
+            "D3050",
+            "$merge() expects the argument to be an array of objects",
+        )),
+    }
+}
+
+pub fn reverse(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    match value {
+        JsonValue::Undefined => Ok(JsonValue::Undefined),
+        JsonValue::Array(array) => {
+            if array.elements.len() <= 1 {
+                return Ok(JsonValue::Array(array.clone()));
+            }
+            let mut elements = array.elements.clone();
+            elements.reverse();
+            Ok(JsonValue::Array(JsonArray::new(
+                elements,
+                array.is_sequence,
+                array.outer_wrapper,
+            )))
+        }
+        _ => Err(JsonError::new(
+            "D3050",
+            "$reverse() expects the argument to be an array",
+        )),
+    }
+}
+
+pub fn shuffle(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    match value {
+        JsonValue::Undefined => Ok(JsonValue::Undefined),
+        JsonValue::Array(array) => {
+            if array.elements.len() <= 1 {
+                return Ok(JsonValue::Array(array.clone()));
+            }
+            let mut rng = rand::rng();
+            let mut shuffled = vec![JsonValue::Undefined; array.elements.len()];
+            for (index, element) in array.elements.iter().enumerate() {
+                let j = rng.random_range(0..=index);
+                if index != j {
+                    shuffled[index] = shuffled[j].clone();
+                }
+                shuffled[j] = element.clone();
+            }
+            Ok(JsonValue::Array(JsonArray::new(
+                shuffled,
+                array.is_sequence,
+                array.outer_wrapper,
+            )))
+        }
+        _ => Err(JsonError::new(
+            "D3050",
+            "$shuffle() expects the argument to be an array",
+        )),
+    }
+}
+
+pub fn distinct(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    match value {
+        JsonValue::Undefined => Ok(JsonValue::Undefined),
+        JsonValue::Array(array) => {
+            if array.elements.len() <= 1 {
+                return Ok(JsonValue::Array(array.clone()));
+            }
+            let mut results: Vec<JsonValue> = Vec::new();
+            for element in &array.elements {
+                if !results.iter().any(|existing| existing == element) {
+                    results.push(element.clone());
+                }
+            }
+            Ok(JsonValue::Array(JsonArray::new(
+                results,
+                array.is_sequence,
+                array.outer_wrapper,
+            )))
+        }
+        _ => Err(JsonError::new(
+            "D3050",
+            "$distinct() expects the argument to be an array",
+        )),
+    }
+}
+
+pub fn assert(condition: &JsonValue, message: Option<&JsonValue>) -> Result<JsonValue, JsonError> {
+    if matches!(boolean(condition), JsonValue::Bool(true)) {
+        return Ok(JsonValue::Undefined);
+    }
+
+    let message_text = if let Some(msg) = message {
+        match msg {
+            JsonValue::String(text) => text.clone(),
+            _ => match strings::string(msg, false) {
+                Ok(JsonValue::String(text)) => text,
+                _ => "$assert() statement failed".to_owned(),
+            },
+        }
+    } else {
+        "$assert() statement failed".to_owned()
+    };
+
+    Err(JsonError::new("D3141", message_text))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +898,58 @@ mod tests {
 
         fn arity(&self) -> Option<usize> {
             Some(self.arity)
+        }
+
+        fn as_any(&self) -> &(dyn Any + Send + Sync) {
+            self
+        }
+    }
+
+    #[derive(Clone)]
+    struct PredicateCallable;
+
+    impl JsonCallable for PredicateCallable {
+        fn call(
+            &self,
+            _ctx: FunctionContext,
+            args: Vec<JsonValue>,
+        ) -> BoxFuture<'static, Result<JsonValue, JsonError>> {
+            let value = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let result = matches!(value, JsonValue::Number(number) if number > 1.0);
+            Box::pin(async move { Ok(JsonValue::Bool(result)) })
+        }
+
+        fn arity(&self) -> Option<usize> {
+            Some(1)
+        }
+
+        fn as_any(&self) -> &(dyn Any + Send + Sync) {
+            self
+        }
+    }
+
+    #[derive(Clone)]
+    struct SumCallable;
+
+    impl JsonCallable for SumCallable {
+        fn call(
+            &self,
+            _ctx: FunctionContext,
+            args: Vec<JsonValue>,
+        ) -> BoxFuture<'static, Result<JsonValue, JsonError>> {
+            let left = match args.get(0) {
+                Some(JsonValue::Number(value)) => *value,
+                _ => 0.0,
+            };
+            let right = match args.get(1) {
+                Some(JsonValue::Number(value)) => *value,
+                _ => 0.0,
+            };
+            Box::pin(async move { Ok(JsonValue::Number(left + right)) })
+        }
+
+        fn arity(&self) -> Option<usize> {
+            Some(2)
         }
 
         fn as_any(&self) -> &(dyn Any + Send + Sync) {
@@ -762,5 +1217,210 @@ mod tests {
             stored[2][1],
             JsonValue::String(ref key) if key == "0"
         ));
+    }
+
+    #[test]
+    fn filter_selects_matching_entries() {
+        let predicate = JsonValue::Function(JsonFunction::new(Arc::new(PredicateCallable)));
+        let array = JsonValue::Array(JsonArray::new(
+            vec![
+                JsonValue::Number(0.0),
+                JsonValue::Number(2.0),
+                JsonValue::Number(3.0),
+            ],
+            true,
+            false,
+        ));
+        let result = block_on(filter(FunctionContext::empty(), array, predicate)).unwrap();
+        if let JsonValue::Array(JsonArray { elements, .. }) = result {
+            assert_eq!(
+                elements,
+                vec![JsonValue::Number(2.0), JsonValue::Number(3.0)]
+            );
+        } else {
+            panic!("Expected filtered sequence");
+        }
+    }
+
+    #[test]
+    fn single_returns_unique_match() {
+        let array = JsonValue::Array(JsonArray::new(
+            vec![JsonValue::String("value".to_owned())],
+            true,
+            false,
+        ));
+        let result =
+            block_on(single(FunctionContext::empty(), array, JsonValue::Undefined)).unwrap();
+        assert_eq!(result, JsonValue::String("value".to_owned()));
+    }
+
+    #[test]
+    fn single_detects_multiple_matches() {
+        let array = JsonValue::Array(JsonArray::new(
+            vec![JsonValue::Number(2.0), JsonValue::Number(3.0)],
+            true,
+            false,
+        ));
+        let predicate = JsonValue::Function(JsonFunction::new(Arc::new(PredicateCallable)));
+        let error = block_on(single(FunctionContext::empty(), array, predicate)).unwrap_err();
+        assert_eq!(error.code, "D3138");
+    }
+
+    #[test]
+    fn fold_left_accumulates_values() {
+        let array = JsonValue::Array(JsonArray::new(
+            vec![JsonValue::Number(1.0), JsonValue::Number(2.0)],
+            true,
+            false,
+        ));
+        let func = JsonValue::Function(JsonFunction::new(Arc::new(SumCallable)));
+        let total = block_on(fold_left(
+            FunctionContext::empty(),
+            array,
+            func,
+            JsonValue::Number(1.0),
+        ))
+        .unwrap();
+        assert_eq!(total, JsonValue::Number(4.0));
+    }
+
+    #[test]
+    fn sift_filters_object_properties() {
+        let object = JsonValue::Object(JsonObject(vec![
+            ("a".to_owned(), JsonValue::Number(1.0)),
+            ("b".to_owned(), JsonValue::Number(3.0)),
+        ]));
+        let predicate = JsonValue::Function(JsonFunction::new(Arc::new(PredicateCallable)));
+        let result = block_on(sift(FunctionContext::empty(), object, predicate)).unwrap();
+        if let JsonValue::Object(JsonObject(entries)) = result {
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].0, "b");
+        } else {
+            panic!("Expected sifted object");
+        }
+    }
+
+    #[test]
+    fn spread_expands_object_into_sequence() {
+        let object = JsonValue::Object(JsonObject(vec![
+            ("a".to_owned(), JsonValue::Number(1.0)),
+            ("b".to_owned(), JsonValue::Number(2.0)),
+        ]));
+        let result = spread(&object);
+        if let JsonValue::Array(JsonArray { elements, .. }) = result {
+            assert_eq!(elements.len(), 2);
+        } else {
+            panic!("Expected spread sequence");
+        }
+    }
+
+    #[test]
+    fn merge_combines_objects() {
+        let array = JsonValue::Array(JsonArray::new(
+            vec![
+                JsonValue::Object(JsonObject(vec![(
+                    "a".to_owned(),
+                    JsonValue::Number(1.0),
+                )])),
+                JsonValue::Object(JsonObject(vec![(
+                    "b".to_owned(),
+                    JsonValue::Number(2.0),
+                )])),
+            ],
+            true,
+            false,
+        ));
+        let merged = merge(&array).unwrap();
+        if let JsonValue::Object(JsonObject(entries)) = merged {
+            assert_eq!(entries.len(), 2);
+        } else {
+            panic!("Expected merged object");
+        }
+    }
+
+    #[test]
+    fn reverse_inverts_array_order() {
+        let array = JsonValue::Array(JsonArray::new(
+            vec![
+                JsonValue::Number(1.0),
+                JsonValue::Number(2.0),
+                JsonValue::Number(3.0),
+            ],
+            true,
+            false,
+        ));
+        let reversed = reverse(&array).unwrap();
+        if let JsonValue::Array(JsonArray { elements, .. }) = reversed {
+            assert_eq!(
+                elements,
+                vec![
+                    JsonValue::Number(3.0),
+                    JsonValue::Number(2.0),
+                    JsonValue::Number(1.0)
+                ]
+            );
+        } else {
+            panic!("Expected reversed array");
+        }
+    }
+
+    #[test]
+    fn shuffle_preserves_elements() {
+        let array = JsonValue::Array(JsonArray::new(
+            vec![
+                JsonValue::Number(1.0),
+                JsonValue::Number(2.0),
+                JsonValue::Number(3.0),
+            ],
+            true,
+            false,
+        ));
+        let shuffled = shuffle(&array).unwrap();
+        if let JsonValue::Array(JsonArray { mut elements, .. }) = shuffled {
+            elements.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+            let mut expected = vec![
+                JsonValue::Number(1.0),
+                JsonValue::Number(2.0),
+                JsonValue::Number(3.0),
+            ];
+            expected.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+            assert_eq!(elements, expected);
+        } else {
+            panic!("Expected shuffled array");
+        }
+    }
+
+    #[test]
+    fn distinct_eliminates_duplicates() {
+        let array = JsonValue::Array(JsonArray::new(
+            vec![
+                JsonValue::Number(1.0),
+                JsonValue::Number(1.0),
+                JsonValue::Number(2.0),
+            ],
+            true,
+            false,
+        ));
+        let distinct_values = distinct(&array).unwrap();
+        if let JsonValue::Array(JsonArray { elements, .. }) = distinct_values {
+            assert_eq!(
+                elements,
+                vec![JsonValue::Number(1.0), JsonValue::Number(2.0)]
+            );
+        } else {
+            panic!("Expected array of distinct values");
+        }
+    }
+
+    #[test]
+    fn assert_returns_error_when_condition_false() {
+        let error = assert(&JsonValue::Bool(false), None).unwrap_err();
+        assert_eq!(error.code, "D3141");
+    }
+
+    #[test]
+    fn assert_returns_undefined_when_condition_true() {
+        let value = assert(&JsonValue::Bool(true), None).unwrap();
+        assert_eq!(value, JsonValue::Undefined);
     }
 }

@@ -22,6 +22,23 @@
             .filter((arg) => arg.length > 0);
     }
 
+    function normalizeRustError(err) {
+        if (!err || typeof err !== 'object') {
+            return;
+        }
+        if (typeof err.code === 'string' && err.code !== 'GenericFailure') {
+            return;
+        }
+        if (typeof err.message !== 'string') {
+            return;
+        }
+        const match = /^([A-Z]\d{4}):\s*(.*)$/.exec(err.message);
+        if (match) {
+            err.code = match[1];
+            err.message = match[2];
+        }
+    }
+
     function wrapRustFunction(name, impl) {
         if (typeof impl !== 'function') {
             return impl;
@@ -34,7 +51,22 @@
             'impl',
             `return function(${argsList}) { return impl.apply(this, arguments); };`
         );
-        const wrapped = factory(impl);
+        const invoke = function (...args) {
+            try {
+                const result = impl.apply(this, args);
+                if (result && typeof result.then === 'function') {
+                    return result.catch((err) => {
+                        normalizeRustError(err);
+                        throw err;
+                    });
+                }
+                return result;
+            } catch (err) {
+                normalizeRustError(err);
+                throw err;
+            }
+        };
+        const wrapped = factory(invoke);
 
         try {
             Object.defineProperty(wrapped, 'name', {
