@@ -22,6 +22,7 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
 - **Container-only automation:** Run builds, tests, and tooling exclusively through Docker Compose (`docker compose run --rm dev …`). Host-level execution of the toolchain is off-limits.
 - **Source layout contract:** Treat `src/jsonata/` as upstream-read-only, implement Rust-native logic in `src/jsonata-rust/`, and maintain hybrid glue plus JavaScript-facing tweaks under `src/jsonata-js-rust/`.
 - **Hybrid runtime flexibility:** Modify `src/jsonata-js-rust/` as needed to integrate Rust shims, adjust harness scripts, or skip/guard tests (for example, external HTTP probes) while documenting deviations from the upstream suite.
+- **Deterministic tooling cache:** Keep the container’s Corepack/Cargo state under `/workspace/.corepack`, `/workspace/.home`, and `/workspace/.cargo` so repeated runs reuse downloaded toolchains; these paths are bind-mounted and ignored by git.
 - **Docker config location:** When invoking tooling inside the container ensure `DOCKER_CONFIG` points at `/workspace/.docker` (host path `${REPO_ROOT}/.docker`) so Docker and Buildx reuse the mounted credentials/cache.
 - **Container command conventions:** The dev container mounts the repo at `/workspace` but Node tooling lives under `src/jsonata-js-rust`; always set `--workdir /workspace/src/jsonata-js-rust` (or `bash -lc "cd /workspace/src/jsonata-js-rust && …"`) when running package scripts so `pnpm` can find `package.json`.
 

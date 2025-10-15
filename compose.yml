@@ -12,4 +12,5 @@ services:
       - COREPACK_ENABLE_DOWNLOAD_PROMPT=0
       - COREPACK_HOME=/workspace/.corepack
       - HOME=/workspace/.home
+      - CARGO_HOME=/workspace/.cargo
       - PATH=/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
