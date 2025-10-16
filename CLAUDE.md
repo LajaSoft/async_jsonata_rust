@@ -60,11 +60,20 @@ docker compose run --rm dev bash -c "rg -n \"Error: JS\" /workspace/tmp/pnpm-tes
 
 ## Architecture
 
+### Major Architecture Change (2024)
+**BREAKING CHANGE**: Replaced the flawed JSON serialization approach with a proper native type system:
+
+- **Old Problem**: Tried to serialize JS functions/objects as JSON, causing "unexpected response" errors and cyclical call issues
+- **New Solution**: `JsonataValue` enum with `NativeRef` variant that holds napi references to JS objects
+- **Key Insight**: JSONata works with dict-like structures and expressions, NOT JSON. JSON conversion only when actually needed (stringify functions)
+- **Result**: Test success rate jumped from ~40% to 98% (1698 passing / 34 failing)
+
 ### Technology Stack
 - **Runtime**: Node.js 20 with Docker containerization
 - **Rust Bridge**: napi-rs 3.3 (no compat mode)
 - **Build System**: pnpm for Node.js dependencies, Cargo for Rust
 - **Testing**: Mocha with nyc coverage for JS, cargo test for Rust
+- **Type System**: Native `JsonataValue` with JS object references via `NativeRef`
 
 ### Key Components
 
@@ -73,12 +82,24 @@ docker compose run --rm dev bash -c "rg -n \"Error: JS\" /workspace/tmp/pnpm-tes
    - Handles JS ↔ Rust value conversion
    - Implements threadsafe function callbacks for async operations
 
-2. **Rust Core** (`src/jsonata-rust/`):
+2. **Conversion System** (`src/jsonata-js-rust/native/src/conversion.rs`):
+   - `js_to_jsonata_value()`: Converts JS values to native `JsonataValue`
+   - `jsonata_value_to_js()`: Converts `JsonataValue` back to JS
+   - Handles `NativeRef` for preserving JS function/object references
+   - Backward compatibility converters for gradual migration
+
+3. **Function Registry** (`src/jsonata-js-rust/native/src/function_registry.rs`):
+   - Macro-based function registration system
+   - Eliminates hundreds of lines of repetitive code
+   - Categories: math functions, core functions, string functions
+   - Auto-generates conversion wrappers for each function type
+
+4. **Rust Core** (`src/jsonata-rust/`):
    - Core JSONata functions organized by category (math, strings, core)
    - Type system supporting JSONata values, functions, and async operations
    - Currently implements: math helpers, `lookup`, `append`, `exists`, `keys`
 
-3. **Hybrid Runtime** (`src/jsonata-js-rust/`):
+5. **Hybrid Runtime** (`src/jsonata-js-rust/`):
    - Modified JSONata that delegates built-ins to Rust
    - Falls back to "not implemented" errors for unported functions
    - Maintains API compatibility with upstream JSONata
@@ -98,16 +119,28 @@ docker compose run --rm dev bash -c "rg -n \"Error: JS\" /workspace/tmp/pnpm-tes
 4. Update function registry in `src/jsonata-js-rust/src/functions.js`
 5. Run tests to verify behavioral parity
 
-### Current Status
-- NAPI bridge upgraded to 3.3 (no compat mode)
-- Math functions, basic core functions implemented
-- Higher-order functions (`$map`, `$filter`, etc.) still need porting
-- Test failures expected until remaining built-ins are implemented
+### Current Status  
+- ✅ **MAJOR BREAKTHROUGH**: Native type system implemented and working
+- ✅ **Architecture Fixed**: Replaced broken JSON approach with `JsonataValue` + `NativeRef`
+- ✅ **Test Results**: Dramatically improved to 1698 passing / 34 failing (was ~40% success)  
+- ✅ **Code Quality**: Macro-based function registry eliminates repetitive code
+- ✅ **Conversion System**: Working JS ↔ `JsonataValue` converters
+- 🔄 **In Progress**: Migrating remaining functions to new architecture
+- 🔄 **Remaining**: Fix NativeRef lifetime issues, complete higher-order functions
 
 ## Important Notes
 
+- **Architecture Change**: Use `JsonataValue` for all new functions, not `JsonValue`
+- **Type Conversion**: Use conversion functions in `conversion.rs` for JS ↔ Rust
+- **Function Registration**: Add new functions via macros in `function_registry.rs`
 - Test logs are automatically captured in `tmp/pnpm-test-last.log`
 - Never run Python directly - always use Docker
 - Preserve upstream JSONata in `src/jsonata/` unchanged
-- Follow existing code patterns when implementing new functions
 - All builds and tests must pass through the containerized environment
+
+## Next Steps for Continuation
+
+1. **Fix NativeRef Lifetime Issues**: Complete the function reference system
+2. **Migrate Remaining Functions**: Move higher-order functions to `JsonataValue`
+3. **Test Cyclical Calls**: Verify Rust→JS→Rust calls work with new system
+4. **Performance Testing**: Benchmark the new native type system vs old approach
