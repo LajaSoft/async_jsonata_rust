@@ -9,6 +9,7 @@ use napi::{Env, Status, ValueType};
 use napi_derive::napi;
 
 mod function_registry;
+mod conversion;
 
 use jsonata_rust::functions::{core as core_impl, math as math_impl, strings as strings_impl};
 use jsonata_rust::types::{

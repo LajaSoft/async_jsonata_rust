@@ -1,0 +1,225 @@
+use napi::bindgen_prelude::*;
+use napi::{Env, Status, ValueType};
+use std::sync::Arc;
+use jsonata_rust::{JsonataValue, JsonataArray, JsonataObject, NativeRef, NativeType};
+use jsonata_rust::types::{JsonValue, JsonArray, JsonObject, JsonFunction};
+
+// Структура для хранения napi reference
+#[derive(Clone)]
+pub struct NapiRef {
+    env: napi::sys::napi_env,
+    reference: napi::sys::napi_ref,
+}
+
+unsafe impl Send for NapiRef {}
+unsafe impl Sync for NapiRef {}
+
+impl NapiRef {
+    pub fn new(env: &Env, value: &Unknown) -> napi::Result<Self> {
+        let mut reference = std::ptr::null_mut();
+        let raw_value = value.raw();
+        let status = unsafe { 
+            napi::sys::napi_create_reference(env.raw(), raw_value, 1, &mut reference) 
+        };
+        if status != napi::sys::Status::napi_ok {
+            return Err(Error::from_status(Status::from(status)));
+        }
+        Ok(Self { 
+            env: env.raw(), 
+            reference 
+        })
+    }
+
+    pub fn to_js_unknown(&self, env: &Env) -> napi::Result<Unknown<'_>> {
+        let mut value = std::ptr::null_mut();
+        let status = unsafe { 
+            napi::sys::napi_get_reference_value(env.raw(), self.reference, &mut value) 
+        };
+        if status != napi::sys::Status::napi_ok {
+            return Err(Error::from_status(Status::from(status)));
+        }
+        unsafe { Ok(Unknown::from_raw_unchecked(env.raw(), value)) }
+    }
+}
+
+impl Drop for NapiRef {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = napi::sys::napi_delete_reference(self.env, self.reference);
+        }
+    }
+}
+
+// Конвертация JS -> JsonataValue
+pub fn js_to_jsonata_value(env: &Env, value: Unknown) -> napi::Result<JsonataValue> {
+    match value.get_type()? {
+        ValueType::Undefined => Ok(JsonataValue::Undefined),
+        ValueType::Null => Ok(JsonataValue::Null),
+        ValueType::Boolean => Ok(JsonataValue::Bool(value.coerce_to_bool()?)),
+        ValueType::Number => Ok(JsonataValue::Number(value.coerce_to_number()?.get_double()?)),
+        ValueType::String => {
+            let js_string = value.coerce_to_string()?;
+            let utf8_string = js_string.into_utf8()?;
+            let string_content = utf8_string.as_str()?.to_owned();
+            Ok(JsonataValue::String(string_content))
+        }
+        ValueType::Function => {
+            // Сохраняем JS функцию как NativeRef
+            let napi_ref = NapiRef::new(env, &value)?;
+            let handle = Arc::new(napi_ref) as Arc<dyn std::any::Any + Send + Sync>;
+            Ok(JsonataValue::NativeRef(NativeRef {
+                handle,
+                value_type: NativeType::JsFunction,
+            }))
+        }
+        ValueType::Object => {
+            let object = value.coerce_to_object()?;
+            if object.is_array()? {
+                // Массив
+                let length = object.get_array_length()?;
+                let mut elements = Vec::with_capacity(length as usize);
+                for index in 0..length {
+                    let element: Unknown = object.get_element(index)?;
+                    elements.push(js_to_jsonata_value(env, element)?);
+                }
+                
+                // Проверяем специальные свойства JSONata
+                let is_sequence = object.has_named_property("sequence")? && 
+                    matches!(object.get_named_property::<Unknown>("sequence")?.get_type()?, ValueType::Boolean) &&
+                    object.get_named_property::<Unknown>("sequence")?.coerce_to_bool()?;
+
+                let outer_wrapper = object.has_named_property("outerWrapper")? && 
+                    matches!(object.get_named_property::<Unknown>("outerWrapper")?.get_type()?, ValueType::Boolean) &&
+                    object.get_named_property::<Unknown>("outerWrapper")?.coerce_to_bool()?;
+
+                Ok(JsonataValue::Array(JsonataArray::new(elements, is_sequence, outer_wrapper)))
+            } else {
+                // Обычный объект - можем либо разобрать, либо сохранить как NativeRef
+                // Для начала сохраним как NativeRef чтобы не потерять информацию
+                let napi_ref = NapiRef::new(env, &value)?;
+                let handle = Arc::new(napi_ref) as Arc<dyn std::any::Any + Send + Sync>;
+                Ok(JsonataValue::NativeRef(NativeRef {
+                    handle,
+                    value_type: NativeType::JsObject,
+                }))
+            }
+        }
+        _ => {
+            // Неизвестный тип - сохраняем как NativeRef
+            let napi_ref = NapiRef::new(env, &value)?;
+            let handle = Arc::new(napi_ref) as Arc<dyn std::any::Any + Send + Sync>;
+            Ok(JsonataValue::NativeRef(NativeRef {
+                handle,
+                value_type: NativeType::JsOther,
+            }))
+        }
+    }
+}
+
+// Конвертация JsonataValue -> JS
+pub fn jsonata_value_to_js(env: &Env, value: JsonataValue) -> napi::Result<Unknown<'_>> {
+    match value {
+        JsonataValue::Undefined => ().into_unknown(env),
+        JsonataValue::Null => {
+            use napi::bindgen_prelude::Null;
+            Null.into_unknown(env)
+        },
+        JsonataValue::Bool(b) => b.into_unknown(env),
+        JsonataValue::Number(n) => env.create_double(n).and_then(|d| d.into_unknown(env)),
+        JsonataValue::String(s) => env.create_string(&s).and_then(|s| s.into_unknown(env)),
+        JsonataValue::Array(arr) => {
+            let mut js_array = env.create_array(arr.elements.len() as u32)?;
+            for (index, element) in arr.elements.into_iter().enumerate() {
+                let js_element = jsonata_value_to_js(env, element)?;
+                js_array.set(index as u32, js_element)?;
+            }
+            
+            // Устанавливаем специальные свойства JSONata
+            if arr.is_sequence {
+                let mut js_array_obj = js_array.coerce_to_object()?;
+                js_array_obj.set_named_property("sequence", true)?;
+            }
+            if arr.outer_wrapper {
+                let mut js_array_obj = js_array.coerce_to_object()?;
+                js_array_obj.set_named_property("outerWrapper", true)?;
+            }
+            
+            js_array.into_unknown(env)
+        }
+        JsonataValue::Object(obj) => {
+            let mut js_object = Object::new(env)?;
+            for (key, val) in obj.0 {
+                let js_val = jsonata_value_to_js(env, val)?;
+                js_object.set_named_property(&key, js_val)?;
+            }
+            js_object.into_unknown(env)
+        }
+        JsonataValue::Function(_func) => {
+            // TODO: Правильная конвертация функций - пока возвращаем undefined
+            ().into_unknown(env)
+        }
+        JsonataValue::NativeRef(_native_ref) => {
+            // TODO: Исправить lifetime проблему с NativeRef
+            // Пока возвращаем undefined
+            ().into_unknown(env)
+        }
+    }
+}
+
+// Конвертация для обратной совместимости: JsonValue -> JsonataValue  
+pub fn json_value_to_jsonata_value(value: JsonValue) -> JsonataValue {
+    match value {
+        JsonValue::Undefined => JsonataValue::Undefined,
+        JsonValue::Null => JsonataValue::Null,
+        JsonValue::Bool(b) => JsonataValue::Bool(b),
+        JsonValue::Number(n) => JsonataValue::Number(n),
+        JsonValue::String(s) => JsonataValue::String(s),
+        JsonValue::Array(arr) => {
+            let elements = arr.elements.into_iter()
+                .map(json_value_to_jsonata_value)
+                .collect();
+            JsonataValue::Array(JsonataArray::new(elements, arr.is_sequence, arr.outer_wrapper))
+        }
+        JsonValue::Object(obj) => {
+            let props = obj.0.into_iter()
+                .map(|(k, v)| (k, json_value_to_jsonata_value(v)))
+                .collect();
+            JsonataValue::Object(JsonataObject(props))
+        }
+        JsonValue::Function(_func) => {
+            // TODO: Конвертация функций
+            JsonataValue::Undefined
+        }
+    }
+}
+
+// Конвертация JsonataValue -> JsonValue для функций которые ещё не обновлены
+pub fn jsonata_value_to_json_value(value: JsonataValue) -> JsonValue {
+    match value {
+        JsonataValue::Undefined => JsonValue::Undefined,
+        JsonataValue::Null => JsonValue::Null,
+        JsonataValue::Bool(b) => JsonValue::Bool(b),
+        JsonataValue::Number(n) => JsonValue::Number(n),
+        JsonataValue::String(s) => JsonValue::String(s),
+        JsonataValue::Array(arr) => {
+            let elements = arr.elements.into_iter()
+                .map(jsonata_value_to_json_value)
+                .collect();
+            JsonValue::Array(JsonArray::new(elements, arr.is_sequence, arr.outer_wrapper))
+        }
+        JsonataValue::Object(obj) => {
+            let props = obj.0.into_iter()
+                .map(|(k, v)| (k, jsonata_value_to_json_value(v)))
+                .collect();
+            JsonValue::Object(JsonObject(props))
+        }
+        JsonataValue::Function(_func) => {
+            // TODO: Конвертация функций
+            JsonValue::Undefined
+        }
+        JsonataValue::NativeRef(_) => {
+            // NativeRef не может быть конвертирован обратно в JsonValue
+            JsonValue::Undefined
+        }
+    }
+}
