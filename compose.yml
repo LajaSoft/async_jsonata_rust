@@ -6,6 +6,10 @@ services:
     working_dir: /workspace
     volumes:
       - .:/workspace
+    deploy:
+      resources:
+        limits:
+          memory: 5g
     stdin_open: true
     tty: true
     environment:

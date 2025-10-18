@@ -3,7 +3,9 @@ use napi::bindgen_prelude::*;
 use napi::{Env, Status, ValueType};
 use std::sync::Arc;
 use jsonata_rust::{JsonataValue, JsonataArray, JsonataObject, NativeRef, NativeType};
+use jsonata_rust::parser::ParserError;
 use jsonata_rust::types::{JsonValue, JsonArray, JsonObject};
+use serde_json::Value as SerdeValue;
 
 // Структура для хранения napi reference
 #[derive(Clone)]
@@ -197,6 +199,67 @@ pub fn json_value_to_jsonata_value(value: JsonValue) -> JsonataValue {
             JsonataValue::Undefined
         }
     }
+}
+
+pub fn serde_value_to_js<'env>(env: &'env Env, value: &SerdeValue) -> napi::Result<Unknown<'env>> {
+    match value {
+        SerdeValue::Null => ().into_unknown(env),
+        SerdeValue::Bool(b) => b.into_unknown(env),
+        SerdeValue::Number(num) => {
+            if let Some(i) = num.as_i64() {
+                env.create_int64(i).and_then(|n| n.into_unknown(env))
+            } else if let Some(u) = num.as_u64() {
+                env
+                    .create_double(u as f64)
+                    .and_then(|n| n.into_unknown(env))
+            } else if let Some(f) = num.as_f64() {
+                env.create_double(f).and_then(|n| n.into_unknown(env))
+            } else {
+                env.create_string(&num.to_string())
+                    .and_then(|s| s.into_unknown(env))
+            }
+        }
+        SerdeValue::String(s) => env.create_string(s).and_then(|s| s.into_unknown(env)),
+        SerdeValue::Array(items) => {
+            let mut array = env.create_array(items.len() as u32)?;
+            for (idx, item) in items.iter().enumerate() {
+                let js_value = serde_value_to_js(env, item)?;
+                array.set(idx as u32, js_value)?;
+            }
+            array.into_unknown(env)
+        }
+        SerdeValue::Object(map) => {
+            let mut object = Object::new(env)?;
+            for (key, val) in map {
+                let js_value = serde_value_to_js(env, val)?;
+                object.set_named_property(key, js_value)?;
+            }
+            object.into_unknown(env)
+        }
+    }
+}
+
+pub fn parser_error_to_js<'env>(env: &'env Env, err: &ParserError) -> napi::Result<Object<'env>> {
+    let mut js_error = Object::new(env)?;
+    js_error.set_named_property("code", env.create_string(&err.code)?)?;
+    js_error.set_named_property("position", env.create_int64(err.position as i64)?)?;
+    if let Some(token) = &err.token {
+        let token_js = serde_value_to_js(env, token)?;
+        js_error.set_named_property("token", token_js)?;
+    }
+    if let Some(value) = &err.value {
+        let value_js = serde_value_to_js(env, value)?;
+        js_error.set_named_property("value", value_js)?;
+    }
+    if let Some(remaining) = &err.remaining {
+        let mut array = env.create_array(remaining.len() as u32)?;
+        for (idx, item) in remaining.iter().enumerate() {
+            let js_value = serde_value_to_js(env, item)?;
+            array.set(idx as u32, js_value)?;
+        }
+        js_error.set_named_property("remaining", array)?;
+    }
+    Ok(js_error)
 }
 
 // Конвертация JsonataValue -> JsonValue для функций которые ещё не обновлены

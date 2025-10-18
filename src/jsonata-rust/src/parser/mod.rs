@@ -8,8 +8,14 @@ mod error;
 mod parser;
 mod tokenizer;
 
+use serde_json::Value;
+
 pub use ast::AstNode;
 pub use error::ParserError;
 pub use parser::Parser;
 
 pub use tokenizer::{Token, TokenKind, Tokenizer};
+
+pub fn parse_expression(source: &str, recover: bool) -> Result<Value, ParserError> {
+    Parser::new(source, recover)?.parse()
+}

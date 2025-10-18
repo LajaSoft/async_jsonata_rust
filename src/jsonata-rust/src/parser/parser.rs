@@ -37,7 +37,7 @@ impl<'a> Parser<'a> {
         Ok(parser)
     }
 
-    pub fn parse(mut self) -> Result<AstNode, ParserError> {
+    pub fn parse(mut self) -> Result<Value, ParserError> {
         let expr = self.expression(0)?;
         if let Some(current) = &self.current {
             if current.id != "(end)" {
@@ -45,7 +45,7 @@ impl<'a> Parser<'a> {
                     .with_token(current.value.clone()));
             }
         }
-        Ok(expr)
+        Ok(expr.into())
     }
 
     fn expression(&mut self, rbp: u32) -> Result<AstNode, ParserError> {
@@ -70,13 +70,17 @@ impl<'a> Parser<'a> {
     fn nud(&mut self, token: TokenData) -> Result<AstNode, ParserError> {
         match token.token_type.as_str() {
             "name" | "number" | "string" | "value" | "regex" | "literal" | "variable" => {
-                Ok(AstNode::new(
+                return Ok(AstNode::new(
                     token.id,
                     token.token_type,
                     token.value,
                     token.position,
-                ))
+                ));
             }
+            _ => {}
+        }
+
+        match token.id.as_str() {
             "(" => self.parse_parenthesized(token),
             "[" => self.parse_array(token),
             "{" => self.parse_object(token),
@@ -327,7 +331,7 @@ impl<'a> Parser<'a> {
         token: TokenData,
         left: AstNode,
     ) -> Result<AstNode, ParserError> {
-        let mut args = Vec::new();
+        let mut args: Vec<AstNode> = Vec::new();
         while let Some(current) = &self.current {
             if current.id == ")" {
                 break;
@@ -354,14 +358,45 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(")", true)?;
+
+        let arguments_value: Value =
+            Value::Array(args.iter().cloned().map(Into::into).collect());
+
+        if is_lambda_name(&left) {
+            for (index, arg) in args.iter().enumerate() {
+                if arg.node_type != "variable" {
+                    return Err(ParserError::new("S0208", arg.position)
+                        .with_token(arg.value.clone())
+                        .with_value(json!((index + 1) as u64)));
+                }
+            }
+
+            let mut lambda =
+                AstNode::new(left.id.clone(), left.token_type.clone(), left.value.clone(), left.position);
+            lambda.set_type("lambda");
+            lambda.set_field("arguments", arguments_value);
+
+            if let Some(current) = &self.current {
+                if current.id == "<" {
+                    let signature = self.parse_signature()?; // placeholder will return None until implemented
+                    if let Some(sig) = signature {
+                        lambda.set_field("signature", sig);
+                    }
+                }
+            }
+
+            self.expect("{", false)?;
+            let body = self.expression(0)?;
+            lambda.set_node("body", body);
+            self.expect("}", false)?;
+            return Ok(lambda);
+        }
+
         let mut node =
             AstNode::new(token.id, token.token_type, token.value, token.position);
         node.set_type("function");
         node.set_node("procedure", left);
-        node.set_field(
-            "arguments",
-            Value::Array(args.into_iter().map(Into::into).collect()),
-        );
+        node.set_field("arguments", arguments_value);
         Ok(node)
     }
 
@@ -462,6 +497,38 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
+    fn parse_signature(&mut self) -> Result<Option<Value>, ParserError> {
+        if !matches!(self.current.as_ref().map(|t| t.id.as_str()), Some("<")) {
+            return Ok(None);
+        }
+
+        let mut depth = 0usize;
+
+        loop {
+            let token = self
+                .current
+                .clone()
+                .ok_or_else(|| ParserError::new("S0206", self.source.len()))?;
+
+            if token.id == "<" {
+                depth += 1;
+            } else if token.id == ">" {
+                if depth == 0 {
+                    return Err(ParserError::new("S0206", token.position));
+                }
+                depth -= 1;
+            }
+
+            self.advance(false)?;
+
+            if depth == 0 {
+                break;
+            }
+        }
+
+        Ok(None)
+    }
+
     fn expect(&mut self, id: &str, infix: bool) -> Result<(), ParserError> {
         if let Some(current) = &self.current {
             if current.id != id {
@@ -474,6 +541,10 @@ impl<'a> Parser<'a> {
         }
         self.advance(infix)
     }
+}
+
+fn is_lambda_name(node: &AstNode) -> bool {
+    node.node_type == "name" && (node.id == "function" || node.id == "\u{03BB}")
 }
 
 fn token_value_to_json(value: &TokenValue) -> Value {

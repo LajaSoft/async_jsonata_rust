@@ -1264,6 +1264,27 @@ pub fn load_functions(env: Env) -> napi::Result<JsUnknown<'static>> {
     Ok(unsafe { mem::transmute::<JsUnknown<'_>, JsUnknown<'static>>(unknown) })
 }
 
+#[napi(js_name = "parseExpression")]
+pub fn parse_expression(env: Env, source: String, recover: Option<bool>) -> napi::Result<JsUnknown<'static>> {
+    let recover = recover.unwrap_or(false);
+    let mut result_object = Object::new(&env)?;
+    match jsonata_rust::parser::parse_expression(&source, recover) {
+        Ok(ast) => {
+            result_object.set_named_property("ok", true)?;
+            let ast_js = crate::conversion::serde_value_to_js(&env, &ast)?;
+            result_object.set_named_property("ast", ast_js)?;
+        }
+        Err(err) => {
+            result_object.set_named_property("ok", false)?;
+            let js_error = crate::conversion::parser_error_to_js(&env, &err)?;
+            result_object.set_named_property("error", js_error)?;
+        }
+    }
+
+    let unknown = result_object.to_unknown();
+    Ok(unsafe { mem::transmute::<JsUnknown<'_>, JsUnknown<'static>>(unknown) })
+}
+
 struct JsFunctionCallable {
     tsfn: ThreadsafeFunction<Invocation, JsRawValue, RawArgList>,
     arity: Option<usize>,
