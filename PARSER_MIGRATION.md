@@ -80,3 +80,31 @@ Initially we can keep the Rust evaluator inside the same process boundary (still
 5. Plan how to integrate the Rust evaluator with the existing N-API bridge once the parser is ready.
 
 Once these steps are underway we can confidently retire the JS front-end and run everything through the Rust stack.  Until then the hybrid mode remains, but the above plan gives us a clear path to the full port.
+
+## 5. Progress snapshot (2024-??-??)
+
+- **Tokenizer**: the Rust lexer in `src/jsonata-rust/src/parser/tokenizer.rs` now mirrors the JS behaviour for strings, escapes, regex literals (with error codes and positions), variables, names, numbers, and operators.
+- **Pratt parser scaffolding**: the Rust parser (`parser.rs`) can drive most basic constructs plus function calls, rudimentary lambda detection (`function`/`λ` names with `$var` args) and block/array/object literals. Signatures are still skipped rather than parsed.
+- **Hybrid glue**: `src/jsonata-js-rust/src/parser.js` calls the Rust parser first, and rehydrates any `type: 'regex'` nodes back into real `RegExp` objects before the evaluator touches them. This fixed the `$match("test escape \\", /\\/)` OOM.
+- **Known gaps**: no `processAST` equivalent yet (paths/predicates/ancestry remain untouched), signature parsing is still TODO, and many node types are stubs (partials, chains, transforms, etc.). Evaluator still depends on JS runtime for everything beyond built-in dispatch.
+
+### Helper scripts
+
+- `scripts/dev_exec.sh`: runs commands *inside* the dev container (`docker compose run --rm dev …`) while forwarding stdin/stdout. Useful for quick experiments:
+  ```bash
+  ./scripts/dev_exec.sh -w src/jsonata-js-rust -- pnpm test
+  ./scripts/dev_exec.sh -- bash -lc 'ls -al'
+  ./scripts/dev_exec.sh -w src/jsonata-js-rust -- node <<'JS'
+  console.log('hello from container');
+  JS
+  ```
+- `scripts/rust_parse.sh`: pipes an expression (argument or stdin) through the Rust parser via N-API and prints the JSON result. Ideal for diffing ASTs.
+  ```bash
+  ./scripts/rust_parse.sh '$sum([1,2,3])'
+  ./scripts/rust_parse.sh -r <<'EOF'
+  $match("test escape \\", /\\/)
+  EOF
+  ```
+  Returns `{ ok: true, ast: … }` on success or propagates the structured parser error `{ ok: false, error: … }`.
+
+Keep these in mind when drilling down on remaining gaps—they save a lot of manual escaping compared to one-off `node -e` invocations.

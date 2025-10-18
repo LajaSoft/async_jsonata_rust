@@ -569,8 +569,8 @@ fn operator_table() -> HashMap<String, u32> {
     map.insert(",".to_string(), 0);
     map.insert("@".to_string(), 80);
     map.insert("#".to_string(), 80);
-    map.insert(";".to_string(), 80);
-    map.insert(":".to_string(), 80);
+    map.insert(";".to_string(), 0);
+    map.insert(":".to_string(), 0);
     map.insert("?".to_string(), 20);
     map.insert("+".to_string(), 50);
     map.insert("-".to_string(), 50);
@@ -583,7 +583,7 @@ fn operator_table() -> HashMap<String, u32> {
     map.insert(">".to_string(), 40);
     map.insert("^".to_string(), 40);
     map.insert("**".to_string(), 60);
-    map.insert("..".to_string(), 20);
+    map.insert("..".to_string(), 0);
     map.insert(":=".to_string(), 10);
     map.insert("!=".to_string(), 40);
     map.insert("<=".to_string(), 40);
