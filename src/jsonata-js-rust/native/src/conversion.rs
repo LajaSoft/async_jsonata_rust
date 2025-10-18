@@ -7,6 +7,23 @@ use jsonata_rust::parser::ParserError;
 use jsonata_rust::types::{JsonValue, JsonArray, JsonObject};
 use serde_json::Value as SerdeValue;
 
+fn object_flag_is_truthy(object: &Object, name: &str) -> napi::Result<bool> {
+    if !object.has_named_property(name)? {
+        return Ok(false);
+    }
+    let flag: Unknown = object.get_named_property(name)?;
+    match flag.get_type()? {
+        ValueType::Undefined | ValueType::Null => Ok(false),
+        ValueType::Boolean => flag.coerce_to_bool(),
+        ValueType::Number => Ok(flag.coerce_to_number()?.get_double()? != 0.0),
+        ValueType::String => {
+            let text = flag.coerce_to_string()?.into_utf8()?.as_str()?.to_owned();
+            Ok(!text.is_empty() && text != "false" && text != "0")
+        }
+        _ => Ok(true),
+    }
+}
+
 // Структура для хранения napi reference
 #[derive(Clone)]
 pub struct NapiRef {
@@ -85,26 +102,60 @@ pub fn js_to_jsonata_value(env: &Env, value: Unknown) -> napi::Result<JsonataVal
                     let element: Unknown = object.get_element(index)?;
                     elements.push(js_to_jsonata_value(env, element)?);
                 }
-                
+
                 // Проверяем специальные свойства JSONata
-                let is_sequence = object.has_named_property("sequence")? && 
-                    matches!(object.get_named_property::<Unknown>("sequence")?.get_type()?, ValueType::Boolean) &&
-                    object.get_named_property::<Unknown>("sequence")?.coerce_to_bool()?;
+                let is_sequence = object.has_named_property("sequence")?
+                    && matches!(
+                        object.get_named_property::<Unknown>("sequence")?.get_type()?,
+                        ValueType::Boolean
+                    )
+                    && object
+                        .get_named_property::<Unknown>("sequence")?
+                        .coerce_to_bool()?;
 
-                let outer_wrapper = object.has_named_property("outerWrapper")? && 
-                    matches!(object.get_named_property::<Unknown>("outerWrapper")?.get_type()?, ValueType::Boolean) &&
-                    object.get_named_property::<Unknown>("outerWrapper")?.coerce_to_bool()?;
+                let outer_wrapper = object.has_named_property("outerWrapper")?
+                    && matches!(
+                        object.get_named_property::<Unknown>("outerWrapper")?.get_type()?,
+                        ValueType::Boolean
+                    )
+                    && object
+                        .get_named_property::<Unknown>("outerWrapper")?
+                        .coerce_to_bool()?;
 
-                Ok(JsonataValue::Array(JsonataArray::new(elements, is_sequence, outer_wrapper)))
+                Ok(JsonataValue::Array(JsonataArray::new(
+                    elements,
+                    is_sequence,
+                    outer_wrapper,
+                )))
             } else {
-                // Обычный объект - можем либо разобрать, либо сохранить как NativeRef
-                // Для начала сохраним как NativeRef чтобы не потерять информацию
-                let napi_ref = NapiRef::new(env, &value)?;
-                let handle = Arc::new(napi_ref) as Arc<dyn std::any::Any + Send + Sync>;
-                Ok(JsonataValue::NativeRef(NativeRef {
-                    handle,
-                    value_type: NativeType::JsObject,
-                }))
+                // Если объект выглядит как jsonata-функция - сохраняем ссылку, иначе разворачиваем поля
+                let is_function_object = object_flag_is_truthy(&object, "_jsonata_function")?
+                    || object_flag_is_truthy(&object, "_jsonata_lambda")?;
+
+                if is_function_object {
+                    let napi_ref = NapiRef::new(env, &value)?;
+                    let handle = Arc::new(napi_ref) as Arc<dyn std::any::Any + Send + Sync>;
+                    Ok(JsonataValue::NativeRef(NativeRef {
+                        handle,
+                        value_type: NativeType::JsObject,
+                    }))
+                } else {
+                    let property_names = object.get_property_names()?;
+                    let length = property_names.get_array_length()?;
+                    let mut props = Vec::with_capacity(length as usize);
+                    for index in 0..length {
+                        let name_value: Unknown = property_names.get_element(index)?;
+                        let name = name_value
+                            .coerce_to_string()?
+                            .into_utf8()?
+                            .as_str()?
+                            .to_owned();
+                        let prop_value: Unknown = object.get_named_property(&name)?;
+                        let converted = js_to_jsonata_value(env, prop_value)?;
+                        props.push((name, converted));
+                    }
+                    Ok(JsonataValue::Object(JsonataObject(props)))
+                }
             }
         }
         _ => {
