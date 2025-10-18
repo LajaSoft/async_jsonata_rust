@@ -96,7 +96,7 @@ pub struct NativeRef {
 #[derive(Clone, Debug)]
 pub enum NativeType {
     JsFunction,
-    JsObject, 
+    JsObject,
     JsArray,
     JsOther,
 }
@@ -261,9 +261,7 @@ pub struct FunctionContext {
 
 impl FunctionContext {
     pub fn empty() -> Self {
-        Self { 
-            focus: None,
-        }
+        Self { focus: None }
     }
 
     pub fn with_focus(focus: JsonataFocus) -> Self {
@@ -339,7 +337,9 @@ impl fmt::Debug for JsonataValue {
             JsonataValue::Array(a) => f.debug_tuple("Array").field(a).finish(),
             JsonataValue::Object(o) => f.debug_tuple("Object").field(o).finish(),
             JsonataValue::Function(func) => f.debug_tuple("Function").field(func).finish(),
-            JsonataValue::NativeRef(nr) => f.debug_tuple("NativeRef").field(&nr.value_type).finish(),
+            JsonataValue::NativeRef(nr) => {
+                f.debug_tuple("NativeRef").field(&nr.value_type).finish()
+            }
         }
     }
 }

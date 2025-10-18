@@ -496,7 +496,10 @@ pub async fn single(
                 Some(JsonValue::Number(index as f64)),
                 Some(container.clone()),
             );
-            eprintln!("[DEBUG] $single calling function for index {}, entry: {:?}", index, entry);
+            eprintln!(
+                "[DEBUG] $single calling function for index {}, entry: {:?}",
+                index, entry
+            );
             let result = callable.call(ctx.clone(), args).await;
             match result {
                 Ok(value) => {
@@ -507,7 +510,10 @@ pub async fn single(
                     is_match
                 }
                 Err(err) => {
-                    eprintln!("[DEBUG] $single index {}: function call failed: {:?}", index, err);
+                    eprintln!(
+                        "[DEBUG] $single index {}: function call failed: {:?}",
+                        index, err
+                    );
                     return Err(err);
                 }
             }
@@ -772,8 +778,9 @@ pub fn merge(value: &JsonValue) -> Result<JsonValue, JsonError> {
             for element in &array.elements {
                 if let JsonValue::Object(JsonObject(entries)) = element {
                     for (key, val) in entries {
-                        if let Some((_, existing)) =
-                            merged.iter_mut().find(|(existing_key, _)| existing_key == key)
+                        if let Some((_, existing)) = merged
+                            .iter_mut()
+                            .find(|(existing_key, _)| existing_key == key)
                         {
                             *existing = val.clone();
                         } else {
@@ -891,9 +898,9 @@ pub fn assert(condition: &JsonValue, message: Option<&JsonValue>) -> Result<Json
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::JsonCallable;
     use futures::executor::block_on;
     use futures::future::BoxFuture;
-    use crate::types::JsonCallable;
     use std::any::Any;
     use std::sync::{Arc, Mutex};
 
@@ -1047,7 +1054,10 @@ mod tests {
     #[test]
     fn type_of_reports_expected_tags() {
         assert_eq!(type_of(&JsonValue::Undefined), JsonValue::Undefined);
-        assert_eq!(type_of(&JsonValue::Null), JsonValue::String("null".to_owned()));
+        assert_eq!(
+            type_of(&JsonValue::Null),
+            JsonValue::String("null".to_owned())
+        );
         assert_eq!(
             type_of(&JsonValue::Bool(true)),
             JsonValue::String("boolean".to_owned())
@@ -1221,10 +1231,7 @@ mod tests {
         }
 
         let array = JsonArray::new(
-            vec![
-                JsonValue::String("x".into()),
-                JsonValue::String("y".into()),
-            ],
+            vec![JsonValue::String("x".into()), JsonValue::String("y".into())],
             true,
             false,
         );
@@ -1286,8 +1293,12 @@ mod tests {
             true,
             false,
         ));
-        let result =
-            block_on(single(FunctionContext::empty(), array, JsonValue::Undefined)).unwrap();
+        let result = block_on(single(
+            FunctionContext::empty(),
+            array,
+            JsonValue::Undefined,
+        ))
+        .unwrap();
         assert_eq!(result, JsonValue::String("value".to_owned()));
     }
 
@@ -1355,14 +1366,8 @@ mod tests {
     fn merge_combines_objects() {
         let array = JsonValue::Array(JsonArray::new(
             vec![
-                JsonValue::Object(JsonObject(vec![(
-                    "a".to_owned(),
-                    JsonValue::Number(1.0),
-                )])),
-                JsonValue::Object(JsonObject(vec![(
-                    "b".to_owned(),
-                    JsonValue::Number(2.0),
-                )])),
+                JsonValue::Object(JsonObject(vec![("a".to_owned(), JsonValue::Number(1.0))])),
+                JsonValue::Object(JsonObject(vec![("b".to_owned(), JsonValue::Number(2.0))])),
             ],
             true,
             false,

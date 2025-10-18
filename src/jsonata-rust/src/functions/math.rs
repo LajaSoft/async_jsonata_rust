@@ -34,7 +34,10 @@ fn jsonata_value_to_number(value: &JsonataValue) -> Option<f64> {
         JsonataValue::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
         JsonataValue::Number(num) => Some(*num),
         JsonataValue::String(text) => text.parse::<f64>().ok(),
-        JsonataValue::Array(_) | JsonataValue::Object(_) | JsonataValue::Function(_) | JsonataValue::NativeRef(_) => None,
+        JsonataValue::Array(_)
+        | JsonataValue::Object(_)
+        | JsonataValue::Function(_)
+        | JsonataValue::NativeRef(_) => None,
     }
 }
 
@@ -145,21 +148,24 @@ fn parse_radix_string(text: &str) -> Option<f64> {
     if text.len() <= 2 {
         return None;
     }
-    let (radix, digits) = if let Some(rest) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        (16, rest)
-    } else if let Some(rest) = text.strip_prefix("0o").or_else(|| text.strip_prefix("0O")) {
-        (8, rest)
-    } else if let Some(rest) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
-        (2, rest)
-    } else {
-        return None;
-    };
+    let (radix, digits) =
+        if let Some(rest) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+            (16, rest)
+        } else if let Some(rest) = text.strip_prefix("0o").or_else(|| text.strip_prefix("0O")) {
+            (8, rest)
+        } else if let Some(rest) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+            (2, rest)
+        } else {
+            return None;
+        };
 
     if digits.is_empty() {
         return None;
     }
 
-    u64::from_str_radix(digits, radix).ok().map(|value| value as f64)
+    u64::from_str_radix(digits, radix)
+        .ok()
+        .map(|value| value as f64)
 }
 
 fn matches_decimal_pattern(text: &str) -> bool {
@@ -230,10 +236,7 @@ pub fn number(value: &JsonValue) -> Result<JsonValue, JsonError> {
             }
         }
         JsonValue::Bool(flag) => Ok(JsonValue::Number(if *flag { 1.0 } else { 0.0 })),
-        _ => Err(JsonError::new(
-            "D3030",
-            "Unable to cast value to a number",
-        )),
+        _ => Err(JsonError::new("D3030", "Unable to cast value to a number")),
     }
 }
 
@@ -401,7 +404,7 @@ mod tests {
     #[test]
     fn power_detects_non_finite_results() {
         assert!(power(Some(0.0), Some(-1.0)).is_err());
-       assert_eq!(power(Some(2.0), Some(3.0)).unwrap(), Some(8.0));
+        assert_eq!(power(Some(2.0), Some(3.0)).unwrap(), Some(8.0));
     }
 
     #[test]

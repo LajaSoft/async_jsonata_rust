@@ -1,5 +1,5 @@
-use crate::types::{JsonArray, JsonError, JsonObject, JsonValue};
 use crate::functions::math::normalize_js_number;
+use crate::types::{JsonArray, JsonError, JsonObject, JsonValue};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
