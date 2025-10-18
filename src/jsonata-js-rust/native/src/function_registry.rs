@@ -1,10 +1,10 @@
 use napi::bindgen_prelude::*;
 use napi::{Env, Status, ValueType};
 use napi::sys;
-use std::ptr;
 use jsonata_rust::functions::{core as core_impl, math as math_impl, strings as strings_impl};
-use jsonata_rust::types::{JsonValue, JsonError};
+use jsonata_rust::types::JsonValue;
 use jsonata_rust::JsonataValue;
+use crate::json_error_to_napi;
 
 // Helper функции, перенесённые из lib.rs
 fn undefined(env: &Env) -> napi::Result<Unknown<'_>> {
@@ -13,7 +13,10 @@ fn undefined(env: &Env) -> napi::Result<Unknown<'_>> {
 
 fn option_number_to_js(env: &Env, value: Option<f64>) -> napi::Result<Unknown<'_>> {
     match value {
-        Some(num) => env.create_double(num).and_then(|n| n.into_unknown(env)),
+        Some(num) => {
+            let normalized = math_impl::normalize_js_number(num);
+            env.create_double(normalized).and_then(|n| n.into_unknown(env))
+        }
         None => undefined(env),
     }
 }
@@ -75,13 +78,84 @@ fn arg_to_jsonata_value(ctx: &FunctionCallContext, index: usize) -> napi::Result
 fn arg_to_json_value(ctx: &FunctionCallContext, index: usize) -> napi::Result<JsonValue> {
     // Конвертируем через JsonataValue для совместимости
     let jsonata_val = arg_to_jsonata_value(ctx, index)?;
-    Ok(crate::conversion::jsonata_value_to_json_value(jsonata_val))
+    crate::conversion::jsonata_value_to_json_value(ctx.env, jsonata_val)
 }
 
 fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<Unknown<'_>> {
     // Конвертируем через JsonataValue для совместимости
     let jsonata_val = crate::conversion::json_value_to_jsonata_value(value);
     crate::conversion::jsonata_value_to_js(env, jsonata_val)
+}
+
+fn register_error(env: &Env, exports: &mut Object) -> napi::Result<()> {
+    let func = env.create_function_from_closure::<(), sys::napi_value, _>(
+        "error",
+        |ctx| {
+            let message_value = arg_to_json_value(&ctx, 0)?;
+            let default_message = "$error() function evaluated".to_string();
+
+            let final_message = match core_impl::boolean(&message_value) {
+                JsonValue::Bool(true) => match strings_impl::string(&message_value, false) {
+                    Ok(JsonValue::String(s)) if !s.is_empty() => s,
+                    Ok(_) => default_message.clone(),
+                    Err(err) => return Err(json_error_to_napi(err)),
+                },
+                _ => default_message.clone(),
+            };
+
+            Err(Error::new(
+                Status::GenericFailure,
+                format!("D3137: {}", final_message),
+            ))
+        },
+    )?;
+    exports.set_named_property("error", func)?;
+    Ok(())
+}
+
+fn register_append(env: &Env, exports: &mut Object) -> napi::Result<()> {
+    let func = env.create_function_from_closure::<(), sys::napi_value, _>(
+        "append",
+        |ctx| {
+            let left = arg_to_jsonata_value(&ctx, 0)?;
+            let right = arg_to_jsonata_value(&ctx, 1)?;
+            let result = core_impl::append_jsonata(&left, &right);
+            map_unknown(crate::conversion::jsonata_value_to_js(ctx.env, result))
+        },
+    )?;
+    exports.set_named_property("append", func)?;
+    Ok(())
+}
+
+fn register_sum(env: &Env, exports: &mut Object) -> napi::Result<()> {
+    let func = env.create_function_from_closure::<(), sys::napi_value, _>(
+        "sum",
+        |ctx| {
+            let arg = arg_to_jsonata_value(&ctx, 0)?;
+            let result = math_impl::sum_jsonata(&arg).map_err(json_error_to_napi)?;
+            map_unknown(crate::conversion::jsonata_value_to_js(ctx.env, result))
+        },
+    )?;
+    exports.set_named_property("sum", func)?;
+    Ok(())
+}
+
+fn register_average(env: &Env, exports: &mut Object) -> napi::Result<()> {
+    let func = env.create_function_from_closure::<(), sys::napi_value, _>(
+        "average",
+        |ctx| {
+            let values = extract_numeric_args(&ctx)?;
+            match math_impl::average(values.as_ref().map(|v| v.as_slice())) {
+                Some(num) => {
+                    let number = ctx.env.create_double(num)?;
+                    map_unknown(number.into_unknown(ctx.env))
+                }
+                None => map_unknown(undefined(ctx.env)),
+            }
+        },
+    )?;
+    exports.set_named_property("average", func)?;
+    Ok(())
 }
 
 // Макрос для создания простых математических функций
@@ -135,7 +209,7 @@ macro_rules! create_core_function {
                     |ctx| {
                         // Получаем JsonataValue, конвертируем в JsonValue, вызываем функцию, конвертируем обратно
                         let jsonata_value = arg_to_jsonata_value(&ctx, 0)?;
-                        let json_value = crate::conversion::jsonata_value_to_json_value(jsonata_value);
+                        let json_value = crate::conversion::jsonata_value_to_json_value(ctx.env, jsonata_value)?;
                         let result = $impl_fn(&json_value);
                         let jsonata_result = crate::conversion::json_value_to_jsonata_value(result);
                         map_unknown(crate::conversion::jsonata_value_to_js(ctx.env, jsonata_result))
@@ -149,10 +223,8 @@ macro_rules! create_core_function {
 }
 
 // Создаём функции с помощью макросов
-create_math_function!(sum, math_impl::sum);
 create_math_function!(max, math_impl::max);
 create_math_function!(min, math_impl::min);
-create_math_function!(average, math_impl::average);
 
 create_single_number_function!(abs, math_impl::abs);
 create_single_number_function!(floor, math_impl::floor);
@@ -179,16 +251,18 @@ pub const CORE_FUNCTIONS: &[(&str, RegisterFunction)] = &[
     ("exists", register_exists),
     ("keys", register_keys),
     ("spread", register_spread),
+    ("append", register_append),
+    ("error", register_error),
 ];
 
 pub fn register_all_functions(env: &Env, exports: &mut Object) -> napi::Result<()> {
     // Регистрируем математические функции
-    for (name, register_fn) in MATH_FUNCTIONS {
+    for (_name, register_fn) in MATH_FUNCTIONS {
         register_fn(env, exports)?;
     }
     
     // Регистрируем core функции  
-    for (name, register_fn) in CORE_FUNCTIONS {
+    for (_name, register_fn) in CORE_FUNCTIONS {
         register_fn(env, exports)?;
     }
     

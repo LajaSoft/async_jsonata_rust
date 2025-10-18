@@ -7,7 +7,8 @@ use rand::Rng;
 
 use crate::functions::strings;
 use crate::types::{
-    FunctionContext, JsonArray, JsonError, JsonFunction, JsonObject, JsonValue,
+    FunctionContext, JsonArray, JsonError, JsonFunction, JsonObject, JsonValue, JsonataArray,
+    JsonataValue,
 };
 
 fn clone_array_elements(array: &JsonArray) -> Vec<JsonValue> {
@@ -68,6 +69,27 @@ pub fn append(left: &JsonValue, right: &JsonValue) -> JsonValue {
     }
 
     JsonValue::Array(JsonArray::new(combined, false, false))
+}
+
+pub fn append_jsonata(left: &JsonataValue, right: &JsonataValue) -> JsonataValue {
+    if left.is_undefined() {
+        return right.clone();
+    }
+    if right.is_undefined() {
+        return left.clone();
+    }
+
+    let mut combined: Vec<JsonataValue> = match left {
+        JsonataValue::Array(array) => array.elements.clone(),
+        value => vec![value.clone()],
+    };
+
+    match right {
+        JsonataValue::Array(array) => combined.extend(array.elements.clone()),
+        value => combined.push(value.clone()),
+    }
+
+    JsonataValue::Array(JsonataArray::new(combined, false, false))
 }
 
 fn coerce_zip_sequence(value: &JsonValue) -> Vec<JsonValue> {

@@ -295,7 +295,7 @@ fn register_math(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     Ok(())
 }
 
-fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Result<JsonValue> {
+pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Result<JsonValue> {
     match value.get_type()? {
         ValueType::Undefined => Ok(JsonValue::Undefined),
         ValueType::Null => Ok(JsonValue::Null),
@@ -635,7 +635,7 @@ fn function_context_from_this(ctx: &CallContext) -> napi::Result<FunctionContext
     }
 }
 
-fn json_error_to_napi(err: JsonError) -> napi::Error {
+pub(crate) fn json_error_to_napi(err: JsonError) -> napi::Error {
     eprintln!("[DEBUG] json_error_to_napi: code={}, message={}", err.code, err.message);
     napi::Error::new(
         Status::GenericFailure,
@@ -1234,9 +1234,7 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
 }
 
 fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
-    const UNIMPLEMENTED: &[&str] = &[
-        "error",
-    ];
+    const UNIMPLEMENTED: &[&str] = &[];
 
     for name in UNIMPLEMENTED {
         let message = format!("Function '{}' is not yet implemented in Rust", name);

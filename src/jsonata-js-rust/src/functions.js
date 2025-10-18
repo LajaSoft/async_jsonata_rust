@@ -48,8 +48,13 @@
         const params = extractParameters(upstream);
         const argsList = params.join(', ');
         const wrapped = function (...args) {
+            if (name === 'string' && typeof upstream === 'function') {
+                return upstream.apply(this, args);
+            }
+            const normalizeArgs = numericFunctions.has(name);
+            const normalizedArgs = normalizeArgs ? args.map((arg) => normalizeInput(arg)) : args;
             try {
-                const result = impl.apply(this, args);
+                const result = impl.apply(this, normalizedArgs);
                 if (result && typeof result.then === 'function') {
                     return result.catch((err) => {
                         // Handle cases where err might be serialized as [object Object]
@@ -117,6 +122,20 @@
         ...upstreamFunctions,
         ...wrappedRustFunctions,
     };
+
+    const numericFunctions = new Set([
+        'sum',
+        'average',
+        'min',
+        'max',
+        'ceil',
+        'floor',
+        'round',
+        'abs',
+        'sqrt',
+        'power',
+        'random',
+    ]);
 
     const rustSort = wrappedRustFunctions.sort;
     const jsSort = upstreamFunctions.sort;

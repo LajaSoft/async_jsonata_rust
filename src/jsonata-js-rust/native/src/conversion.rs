@@ -1,8 +1,9 @@
+use crate::js_unknown_to_json_value;
 use napi::bindgen_prelude::*;
 use napi::{Env, Status, ValueType};
 use std::sync::Arc;
 use jsonata_rust::{JsonataValue, JsonataArray, JsonataObject, NativeRef, NativeType};
-use jsonata_rust::types::{JsonValue, JsonArray, JsonObject, JsonFunction};
+use jsonata_rust::types::{JsonValue, JsonArray, JsonObject};
 
 // Структура для хранения napi reference
 #[derive(Clone)]
@@ -30,7 +31,7 @@ impl NapiRef {
         })
     }
 
-    pub fn to_js_unknown(&self, env: &Env) -> napi::Result<Unknown<'_>> {
+    pub fn to_js_unknown<'env>(&self, env: &'env Env) -> napi::Result<Unknown<'env>> {
         let mut value = std::ptr::null_mut();
         let status = unsafe { 
             napi::sys::napi_get_reference_value(env.raw(), self.reference, &mut value) 
@@ -158,10 +159,15 @@ pub fn jsonata_value_to_js(env: &Env, value: JsonataValue) -> napi::Result<Unkno
             // TODO: Правильная конвертация функций - пока возвращаем undefined
             ().into_unknown(env)
         }
-        JsonataValue::NativeRef(_native_ref) => {
-            // TODO: Исправить lifetime проблему с NativeRef
-            // Пока возвращаем undefined
-            ().into_unknown(env)
+        JsonataValue::NativeRef(native_ref) => {
+            let handle = native_ref.handle.clone();
+            match Arc::downcast::<NapiRef>(handle) {
+                Ok(napi_ref) => {
+                    let js_value = napi_ref.to_js_unknown(env)?;
+                    Ok(js_value)
+                }
+                Err(_) => ().into_unknown(env),
+            }
         }
     }
 }
@@ -194,32 +200,44 @@ pub fn json_value_to_jsonata_value(value: JsonValue) -> JsonataValue {
 }
 
 // Конвертация JsonataValue -> JsonValue для функций которые ещё не обновлены
-pub fn jsonata_value_to_json_value(value: JsonataValue) -> JsonValue {
+pub fn jsonata_value_to_json_value(env: &Env, value: JsonataValue) -> napi::Result<JsonValue> {
     match value {
-        JsonataValue::Undefined => JsonValue::Undefined,
-        JsonataValue::Null => JsonValue::Null,
-        JsonataValue::Bool(b) => JsonValue::Bool(b),
-        JsonataValue::Number(n) => JsonValue::Number(n),
-        JsonataValue::String(s) => JsonValue::String(s),
+        JsonataValue::Undefined => Ok(JsonValue::Undefined),
+        JsonataValue::Null => Ok(JsonValue::Null),
+        JsonataValue::Bool(b) => Ok(JsonValue::Bool(b)),
+        JsonataValue::Number(n) => Ok(JsonValue::Number(n)),
+        JsonataValue::String(s) => Ok(JsonValue::String(s)),
         JsonataValue::Array(arr) => {
-            let elements = arr.elements.into_iter()
-                .map(jsonata_value_to_json_value)
-                .collect();
-            JsonValue::Array(JsonArray::new(elements, arr.is_sequence, arr.outer_wrapper))
+            let mut elements = Vec::with_capacity(arr.elements.len());
+            for element in arr.elements {
+                elements.push(jsonata_value_to_json_value(env, element)?);
+            }
+            Ok(JsonValue::Array(JsonArray::new(
+                elements,
+                arr.is_sequence,
+                arr.outer_wrapper,
+            )))
         }
         JsonataValue::Object(obj) => {
-            let props = obj.0.into_iter()
-                .map(|(k, v)| (k, jsonata_value_to_json_value(v)))
-                .collect();
-            JsonValue::Object(JsonObject(props))
+            let mut props = Vec::with_capacity(obj.0.len());
+            for (k, v) in obj.0 {
+                props.push((k, jsonata_value_to_json_value(env, v)?));
+            }
+            Ok(JsonValue::Object(JsonObject(props)))
         }
         JsonataValue::Function(_func) => {
             // TODO: Конвертация функций
-            JsonValue::Undefined
+            Ok(JsonValue::Undefined)
         }
-        JsonataValue::NativeRef(_) => {
-            // NativeRef не может быть конвертирован обратно в JsonValue
-            JsonValue::Undefined
+        JsonataValue::NativeRef(native_ref) => {
+            let handle = native_ref.handle.clone();
+            match Arc::downcast::<NapiRef>(handle) {
+                Ok(napi_ref) => {
+                    let js_value = napi_ref.to_js_unknown(env)?;
+                    js_unknown_to_json_value(env, js_value)
+                }
+                Err(_) => Ok(JsonValue::Undefined),
+            }
         }
     }
 }

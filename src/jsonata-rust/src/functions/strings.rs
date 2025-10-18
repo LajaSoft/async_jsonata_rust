@@ -1,4 +1,5 @@
 use crate::types::{JsonArray, JsonError, JsonObject, JsonValue};
+use crate::functions::math::normalize_js_number;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
@@ -259,6 +260,7 @@ impl<F: Formatter> Formatter for JsonataFormatter<F> {
 }
 
 fn format_js_number(value: f64) -> String {
+    let value = normalize_js_number(value);
     if value == 0.0 {
         return "0".to_owned();
     }

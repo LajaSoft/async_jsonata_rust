@@ -1,12 +1,80 @@
 use rand::Rng;
 
-use crate::types::{JsonError, JsonValue};
+use crate::types::{JsonError, JsonValue, JsonataValue};
 
 /// Numeric helper functions translated from the JSONata JavaScript implementation.
+pub fn normalize_js_number(value: f64) -> f64 {
+    if !value.is_finite() {
+        return value;
+    }
+    if value == 0.0 {
+        return 0.0;
+    }
+    let abs = value.abs();
+    let exponent = abs.log10().floor();
+    let scale = 10_f64.powf(15.0 - 1.0 - exponent);
+    let rounded = (value * scale).round() / scale;
+    if rounded == 0.0 {
+        0.0
+    } else {
+        rounded
+    }
+}
+
 pub fn sum(args: Option<&[f64]>) -> Option<f64> {
     let slice = args?;
     let total: f64 = slice.iter().copied().sum();
-    Some(total)
+    Some(normalize_js_number(total))
+}
+
+fn jsonata_value_to_number(value: &JsonataValue) -> Option<f64> {
+    match value {
+        JsonataValue::Undefined => None,
+        JsonataValue::Null => Some(0.0),
+        JsonataValue::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
+        JsonataValue::Number(num) => Some(*num),
+        JsonataValue::String(text) => text.parse::<f64>().ok(),
+        JsonataValue::Array(_) | JsonataValue::Object(_) | JsonataValue::Function(_) | JsonataValue::NativeRef(_) => None,
+    }
+}
+
+pub fn sum_jsonata(value: &JsonataValue) -> Result<JsonataValue, JsonError> {
+    match value {
+        JsonataValue::Undefined | JsonataValue::Null => Ok(JsonataValue::Undefined),
+        JsonataValue::Array(array) => {
+            if array.elements.is_empty() {
+                return Ok(JsonataValue::Undefined);
+            }
+            let mut total = 0.0;
+            let mut found = false;
+            for element in &array.elements {
+                if let Some(num) = jsonata_value_to_number(element) {
+                    total += num;
+                    found = true;
+                } else {
+                    return Err(JsonError::new(
+                        "D3050",
+                        "$sum() expects the input array to contain only numeric values",
+                    ));
+                }
+            }
+            if !found {
+                Ok(JsonataValue::Undefined)
+            } else {
+                Ok(JsonataValue::Number(total))
+            }
+        }
+        other => {
+            if let Some(num) = jsonata_value_to_number(other) {
+                Ok(JsonataValue::Number(num))
+            } else {
+                Err(JsonError::new(
+                    "D3050",
+                    "$sum() expects a numeric argument or an array of numerics",
+                ))
+            }
+        }
+    }
 }
 
 pub fn count<T>(args: Option<&[T]>) -> usize {
