@@ -50,14 +50,19 @@ impl JsFunctionCallable {
             if ctx.length() == 0 {
                 return map_unknown(undefined(ctx.env)).map(JsRawValue);
             }
-            let focus_arg: JsUnknown = if ctx.length() > 0 {
-                ctx.get(0)?
+            let arg_count = ctx.length();
+            let first_arg: JsUnknown = ctx.get(0)?;
+            let has_tsfn_prefix = matches!(first_arg.get_type()?, ValueType::Undefined | ValueType::Null);
+            let base_index = if has_tsfn_prefix { 1 } else { 0 };
+
+            let focus_arg: JsUnknown = if arg_count > base_index {
+                ctx.get(base_index)?
             } else {
                 undefined(ctx.env)?
             };
-            let arg_count = ctx.length();
-            let mut call_args: Vec<JsUnknown> = Vec::with_capacity(arg_count.saturating_sub(1));
-            for index in 1..arg_count {
+
+            let mut call_args: Vec<JsUnknown> = Vec::with_capacity(arg_count.saturating_sub(base_index + 1));
+            for index in (base_index + 1)..arg_count {
                 call_args.push(ctx.get(index)?);
             }
             let focus_type_snapshot = focus_arg.get_type()?;

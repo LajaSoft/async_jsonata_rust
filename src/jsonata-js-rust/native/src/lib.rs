@@ -42,10 +42,13 @@ mod bridge_regex_match;
 mod bridge_register_strings;
 #[path = "lib/callable.rs"]
 mod bridge_callable;
+#[path = "lib/callable_registry.rs"]
+mod bridge_callable_registry;
 
 use bridge_types::*;
 use bridge_handles::*;
 use bridge_callable::*;
+use bridge_callable_registry::*;
 use bridge_convert::*;
 use bridge_register_core::*;
 use bridge_register_math::*;

@@ -4,6 +4,63 @@
     const native = require('../native/index.node');
 
     const rustFunctions = native.load_functions();
+    const rustArityOverrides = Object.freeze({
+        abs: 1,
+        append: 2,
+        assert: 2,
+        average: 1,
+        base64decode: 1,
+        base64encode: 1,
+        boolean: 1,
+        ceil: 1,
+        contains: 2,
+        count: 1,
+        decodeUrl: 1,
+        decodeUrlComponent: 1,
+        distinct: 1,
+        each: 2,
+        encodeUrl: 1,
+        encodeUrlComponent: 1,
+        error: 1,
+        exists: 1,
+        filter: 2,
+        floor: 1,
+        foldLeft: 3,
+        join: 2,
+        keys: 1,
+        length: 1,
+        lookup: 2,
+        lowercase: 1,
+        map: 2,
+        match: 3,
+        max: 1,
+        merge: 1,
+        min: 1,
+        not: 1,
+        number: 1,
+        pad: 3,
+        power: 2,
+        random: 0,
+        replace: 4,
+        reverse: 1,
+        round: 2,
+        shuffle: 1,
+        sift: 2,
+        single: 2,
+        sort: 2,
+        split: 3,
+        spread: 1,
+        sqrt: 1,
+        string: 2,
+        substring: 3,
+        substringAfter: 2,
+        substringBefore: 2,
+        sum: 1,
+        trim: 1,
+        type: 1,
+        uppercase: 1,
+        zip: 2,
+    });
 
     const identifierPattern = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
@@ -64,7 +121,14 @@
             return impl;
         }
 
-        const params = Array.from({ length: impl.length || 0 }, (_, index) => `arg${index}`);
+        const overrideArity = Object.prototype.hasOwnProperty.call(rustArityOverrides, name)
+            ? rustArityOverrides[name]
+            : undefined;
+        const inferredArity = typeof overrideArity === 'number'
+            ? overrideArity
+            : (typeof impl.arity === 'number' ? impl.arity : (typeof impl.length === 'number' ? impl.length : 0));
+
+        const params = Array.from({ length: inferredArity || 0 }, (_, index) => `arg${index}`);
         const argsList = params.join(', ');
         const wrapped = function (...args) {
             try {
@@ -96,8 +160,6 @@
         };
 
         try {
-            const inferredArity = typeof impl.length === 'number' ? impl.length : undefined;
-
             if (typeof inferredArity === 'number' && Number.isFinite(inferredArity)) {
                 Object.defineProperty(wrapped, 'arity', {
                     value: inferredArity,

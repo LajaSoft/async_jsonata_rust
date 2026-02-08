@@ -16,7 +16,7 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
             let js_func = JsFunction::try_from_unknown(value)?;
             let mut jsonata_apply_adapter = false;
 
-            if let Ok(js_obj) = js_func.coerce_to_object() {
+            if let Ok(mut js_obj) = js_func.coerce_to_object() {
                 if js_obj.has_named_property("__jsonata_apply_adapter")? {
                     let marker: JsUnknown = js_obj.get_named_property("__jsonata_apply_adapter")?;
                     jsonata_apply_adapter = matches!(marker.get_type()?, ValueType::Boolean)
@@ -27,6 +27,9 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
                         ("__jsonata_regex_source".to_owned(), JsonValue::String(source)),
                         ("__jsonata_regex_flags".to_owned(), JsonValue::String(flags)),
                     ])));
+                }
+                if let Some(callable) = resolve_registered_callable(&js_obj)? {
+                    return Ok(JsonValue::Function(JsonFunction::new(callable)));
                 }
             }
 
@@ -91,8 +94,11 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
                 }
             }
 
-            let callable = JsFunctionCallable::new_with_mode(env, js_func, jsonata_apply_adapter)?;
-            Ok(JsonValue::Function(JsonFunction::new(Arc::new(callable))))
+            let mut js_obj = js_func.coerce_to_object()?;
+            let callable_arc: Arc<dyn JsonCallable> =
+                Arc::new(JsFunctionCallable::new_with_mode(env, js_func, jsonata_apply_adapter)?);
+            attach_callable_metadata(env, &mut js_obj, callable_arc.clone())?;
+            Ok(JsonValue::Function(JsonFunction::new(callable_arc)))
         }
         ValueType::Object => {
             let object = value.coerce_to_object()?;

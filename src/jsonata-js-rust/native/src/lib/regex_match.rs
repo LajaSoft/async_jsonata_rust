@@ -1,30 +1,5 @@
 use super::*;
 
-async fn call_replacement_function(
-    function: &JsonFunction,
-    focus: FunctionContext,
-    matched: JsonValue,
-) -> std::result::Result<JsonValue, JsonError> {
-    let direct = function.call(focus.clone(), vec![matched.clone()]).await?;
-    if !matches!(direct, JsonValue::Undefined) {
-        return Ok(direct);
-    }
-
-    let self_arg = focus
-        .focus()
-        .map(|item| item.input.clone())
-        .unwrap_or(JsonValue::Undefined);
-    function
-        .call(
-            focus,
-            vec![
-                self_arg,
-                JsonValue::Array(JsonArray::new(vec![matched], false, false)),
-            ],
-        )
-        .await
-}
-
 pub(crate) async fn replace_function_impl(
     focus: FunctionContext,
     input: JsonValue,
@@ -138,12 +113,9 @@ pub(crate) async fn replace_function_impl(
                     next: None,
                 };
                 let replacement_value = if let Some(function) = &replacement_fn {
-                    let called = call_replacement_function(
-                        function,
-                        focus.clone(),
-                        regex_match.callback_object(),
-                    )
-                    .await?;
+                    let called = function
+                        .call(focus.clone(), vec![regex_match.callback_object()])
+                        .await?;
                     match called {
                         JsonValue::String(text) => text,
                         other => {
@@ -189,12 +161,9 @@ pub(crate) async fn replace_function_impl(
                 let start = matched.start.max(position).min(input_text.len());
                 result.push_str(&input_text[position..start]);
                 let replacement_value = if let Some(function) = &replacement_fn {
-                    let called = call_replacement_function(
-                        function,
-                        focus.clone(),
-                        matched.callback_object(),
-                    )
-                    .await?;
+                    let called = function
+                        .call(focus.clone(), vec![matched.callback_object()])
+                        .await?;
                     match called {
                         JsonValue::String(text) => text,
                         other => {
