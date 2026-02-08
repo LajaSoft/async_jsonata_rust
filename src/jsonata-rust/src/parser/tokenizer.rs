@@ -434,6 +434,13 @@ impl<'a> Tokenizer<'a> {
             position: start,
             token: Some(text.clone()),
         })?;
+        if !number.is_finite() {
+            return Err(TokenizerError {
+                code: "S0102",
+                position: start,
+                token: Some(text.clone()),
+            });
+        }
         Ok(self.create_token(TokenKind::Number, TokenValue::Number(number), text, start))
     }
 

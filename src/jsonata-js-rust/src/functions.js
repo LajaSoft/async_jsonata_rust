@@ -80,6 +80,21 @@
         };
 
         try {
+            var inferredArity;
+            if (typeof upstream === 'function') {
+                inferredArity = upstream.length;
+            } else if (typeof impl.length === 'number') {
+                inferredArity = impl.length;
+            }
+
+            if (typeof inferredArity === 'number' && Number.isFinite(inferredArity)) {
+                Object.defineProperty(wrapped, 'arity', {
+                    value: inferredArity,
+                    configurable: true,
+                    enumerable: false,
+                });
+            }
+
             Object.defineProperty(wrapped, 'name', {
                 value: name,
                 configurable: true,

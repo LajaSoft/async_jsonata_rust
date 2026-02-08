@@ -199,8 +199,53 @@ fn process_lambda(mut map: serde_json::Map<String, Value>) -> Result<Value, Pars
     let body = map
         .remove("body")
         .ok_or_else(|| ParserError::new("S0206", map_position(&map)))?;
-    result.insert("body".to_string(), process_ast(body)?);
+    let body = process_ast(body)?;
+    result.insert("body".to_string(), tail_call_optimize(body));
     Ok(Value::Object(result))
+}
+
+fn tail_call_optimize(expr: Value) -> Value {
+    let Value::Object(mut map) = expr else {
+        return expr;
+    };
+
+    let expr_type = map
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    if expr_type == "function" && !map.contains_key("predicate") {
+        let position = map.get("position").cloned().unwrap_or(Value::Null);
+        let mut thunk = serde_json::Map::new();
+        thunk.insert("type".to_string(), Value::String("lambda".to_string()));
+        thunk.insert("thunk".to_string(), Value::Bool(true));
+        thunk.insert("arguments".to_string(), Value::Array(vec![]));
+        thunk.insert("position".to_string(), position);
+        thunk.insert("body".to_string(), Value::Object(map));
+        return Value::Object(thunk);
+    }
+
+    if expr_type == "condition" {
+        if let Some(then_branch) = map.remove("then") {
+            map.insert("then".to_string(), tail_call_optimize(then_branch));
+        }
+        if let Some(else_branch) = map.remove("else") {
+            map.insert("else".to_string(), tail_call_optimize(else_branch));
+        }
+        return Value::Object(map);
+    }
+
+    if expr_type == "block" {
+        if let Some(expressions) = map.get_mut("expressions").and_then(Value::as_array_mut) {
+            if let Some(last) = expressions.pop() {
+                expressions.push(tail_call_optimize(last));
+            }
+        }
+        return Value::Object(map);
+    }
+
+    Value::Object(map)
 }
 
 fn process_condition(mut map: serde_json::Map<String, Value>) -> Result<Value, ParserError> {
