@@ -5,6 +5,8 @@
 
 mod ast;
 mod error;
+#[path = "parser-lib/mod.rs"]
+mod parser_lib;
 mod parser;
 mod tokenizer;
 
