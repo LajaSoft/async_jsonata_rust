@@ -28,6 +28,7 @@ pub(crate) fn matcher_result_to_object(
 pub(crate) struct MatcherResult {
     pub(crate) match_text: String,
     pub(crate) start: usize,
+    pub(crate) end: usize,
     pub(crate) groups: Vec<Option<String>>,
     pub(crate) next: Option<JsonFunction>,
 }
@@ -45,6 +46,7 @@ impl MatcherResult {
         let mut props = vec![
             ("match".to_owned(), JsonValue::String(self.match_text.clone())),
             ("start".to_owned(), JsonValue::Number(self.start as f64)),
+            ("end".to_owned(), JsonValue::Number(self.end as f64)),
             ("index".to_owned(), JsonValue::Number(self.start as f64)),
             (
                 "groups".to_owned(),
@@ -107,6 +109,17 @@ fn matcher_result_from_json(
                 }
             };
 
+            let end = match get_object_property(&object, "end") {
+                Some(JsonValue::Number(num)) if num.is_finite() && *num >= 0.0 => *num as usize,
+                Some(JsonValue::Undefined) | None => start.saturating_add(match_text.len()),
+                Some(other) => {
+                    return Err(JsonError::new(
+                        "T1010",
+                        format!("Matcher result field 'end' must be number, got {:?}", other),
+                    ))
+                }
+            };
+
             let groups = match get_object_property(&object, "groups") {
                 Some(JsonValue::Array(array)) => array
                     .elements
@@ -137,6 +150,7 @@ fn matcher_result_from_json(
             Ok(Some(MatcherResult {
                 match_text,
                 start,
+                end,
                 groups,
                 next,
             }))
@@ -205,12 +219,28 @@ pub(crate) fn replacement_string_from_match(
         let remaining = replacement.len() - position;
         let first_len = max_digits.min(remaining);
         let first_slice = &replacement[position..position + first_len];
-        let mut capture_index = first_slice.parse::<usize>().ok();
+        let first_digits_len = first_slice
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .count();
+        let mut capture_index = if first_digits_len == 0 {
+            None
+        } else {
+            first_slice[..first_digits_len].parse::<usize>().ok()
+        };
         if max_digits > 1 {
             if let Some(parsed) = capture_index {
                 if parsed > regex_match.groups.len() && first_len > 1 {
                     let second_slice = &replacement[position..position + first_len - 1];
-                    capture_index = second_slice.parse::<usize>().ok();
+                    let second_digits_len = second_slice
+                        .chars()
+                        .take_while(|ch| ch.is_ascii_digit())
+                        .count();
+                    capture_index = if second_digits_len == 0 {
+                        None
+                    } else {
+                        second_slice[..second_digits_len].parse::<usize>().ok()
+                    };
                 }
             }
         }

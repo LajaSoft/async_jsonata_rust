@@ -213,5 +213,51 @@ pub(crate) fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Resul
     })?;
     exports.set_named_property("replace", replace_fn)?;
 
+    let contains_fn =
+        env.create_function_from_closure::<(), sys::napi_value, _>("contains", |ctx| {
+            let input = arg_to_json_value(&ctx, 0)?;
+            let token = arg_to_json_value(&ctx, 1)?;
+            let focus = function_context_from_this(&ctx)?;
+            ctx.env
+                .spawn_future_with_callback(
+                    async move {
+                        contains_function_impl(focus, input, token)
+                            .await
+                            .map_err(json_error_to_napi)
+                    },
+                    |env, result| json_value_to_js(env, result),
+                )
+                .map(|promise| promise.raw())
+        })?;
+    exports.set_named_property("contains", contains_fn)?;
+
+    let split_fn = env.create_function_from_closure::<(), sys::napi_value, _>("split", |ctx| {
+        let input = arg_to_json_value(&ctx, 0)?;
+        let separator = arg_to_json_value(&ctx, 1)?;
+        let limit = arg_to_json_value(&ctx, 2)?;
+        let focus = function_context_from_this(&ctx)?;
+        ctx.env
+            .spawn_future_with_callback(
+                async move {
+                    split_function_impl(focus, input, separator, limit)
+                        .await
+                        .map_err(json_error_to_napi)
+                },
+                |env, result| json_value_to_js(env, result),
+            )
+            .map(|promise| promise.raw())
+    })?;
+    exports.set_named_property("split", split_fn)?;
+
+    let join_fn = env.create_function_from_closure::<(), sys::napi_value, _>("join", |ctx| {
+        let values = arg_to_json_value(&ctx, 0)?;
+        let separator = arg_to_json_value(&ctx, 1)?;
+        match join_function_impl(values, separator) {
+            Ok(result) => map_unknown(json_value_to_js(ctx.env, result)),
+            Err(err) => Err(json_error_to_napi(err)),
+        }
+    })?;
+    exports.set_named_property("join", join_fn)?;
+
     Ok(())
 }

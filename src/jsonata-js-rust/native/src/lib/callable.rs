@@ -4,6 +4,7 @@ pub(crate) struct JsFunctionCallable {
     tsfn: ThreadsafeFunction<Invocation, JsRawValue, RawArgList>,
     arity: Option<usize>,
     function_handle: Arc<JsFunctionHandle>,
+    jsonata_apply_adapter: bool,
 }
 
 struct Invocation {
@@ -18,6 +19,14 @@ unsafe impl Sync for JsFunctionCallable {}
 
 impl JsFunctionCallable {
     pub(crate) fn new(env: &Env, func: JsFunction) -> napi::Result<Self> {
+        Self::new_with_mode(env, func, false)
+    }
+
+    pub(crate) fn new_with_mode(
+        env: &Env,
+        func: JsFunction,
+        jsonata_apply_adapter: bool,
+    ) -> napi::Result<Self> {
         let func_object = JsObject::from_raw(env.raw(), func.raw());
         let arity = match func_object.get_named_property::<JsUnknown>("length") {
             Ok(length_value) => match length_value.get_type()? {
@@ -133,6 +142,7 @@ impl JsFunctionCallable {
             tsfn,
             arity,
             function_handle,
+            jsonata_apply_adapter,
         })
     }
 
@@ -150,7 +160,18 @@ impl JsonCallable for JsFunctionCallable {
         let (sender, receiver) = oneshot::channel();
         let shared_sender = SharedSender::new(sender);
         let invocation = Invocation {
-            args,
+            args: if self.jsonata_apply_adapter {
+                let focus_arg = ctx
+                    .focus()
+                    .map(|focus| focus.input.clone())
+                    .unwrap_or(JsonValue::Undefined);
+                vec![
+                    focus_arg,
+                    JsonValue::Array(JsonArray::new(args, false, false)),
+                ]
+            } else {
+                args
+            },
             sender: shared_sender.clone(),
             focus: ctx.focus(),
         };

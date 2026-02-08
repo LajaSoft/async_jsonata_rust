@@ -1,5 +1,30 @@
 use super::*;
 
+async fn call_replacement_function(
+    function: &JsonFunction,
+    focus: FunctionContext,
+    matched: JsonValue,
+) -> std::result::Result<JsonValue, JsonError> {
+    let direct = function.call(focus.clone(), vec![matched.clone()]).await?;
+    if !matches!(direct, JsonValue::Undefined) {
+        return Ok(direct);
+    }
+
+    let self_arg = focus
+        .focus()
+        .map(|item| item.input.clone())
+        .unwrap_or(JsonValue::Undefined);
+    function
+        .call(
+            focus,
+            vec![
+                self_arg,
+                JsonValue::Array(JsonArray::new(vec![matched], false, false)),
+            ],
+        )
+        .await
+}
+
 pub(crate) async fn replace_function_impl(
     focus: FunctionContext,
     input: JsonValue,
@@ -94,10 +119,17 @@ pub(crate) async fn replace_function_impl(
                 let Some(full_match) = captures.get(0) else {
                     continue;
                 };
+                if full_match.as_str().is_empty() {
+                    return Err(JsonError::new(
+                        "D1004",
+                        "Regular expression matches zero length string",
+                    ));
+                }
                 result.push_str(&input_text[position..full_match.start()]);
                 let regex_match = MatcherResult {
                     match_text: full_match.as_str().to_owned(),
                     start: full_match.start(),
+                    end: full_match.end(),
                     groups: captures
                         .iter()
                         .skip(1)
@@ -106,9 +138,12 @@ pub(crate) async fn replace_function_impl(
                     next: None,
                 };
                 let replacement_value = if let Some(function) = &replacement_fn {
-                    let called = function
-                        .call(focus.clone(), vec![regex_match.callback_object()])
-                        .await?;
+                    let called = call_replacement_function(
+                        function,
+                        focus.clone(),
+                        regex_match.callback_object(),
+                    )
+                    .await?;
                     match called {
                         JsonValue::String(text) => text,
                         other => {
@@ -125,7 +160,7 @@ pub(crate) async fn replace_function_impl(
                     replacement_string_from_match(&replacement_literal, &regex_match)
                 };
                 result.push_str(&replacement_value);
-                position = full_match.start() + full_match.as_str().len();
+                position = full_match.end();
                 count += 1;
             }
 
@@ -145,12 +180,21 @@ pub(crate) async fn replace_function_impl(
                         break;
                     }
                 }
+                if matched.match_text.is_empty() {
+                    return Err(JsonError::new(
+                        "D1004",
+                        "Regular expression matches zero length string",
+                    ));
+                }
                 let start = matched.start.max(position).min(input_text.len());
                 result.push_str(&input_text[position..start]);
                 let replacement_value = if let Some(function) = &replacement_fn {
-                    let called = function
-                        .call(focus.clone(), vec![matched.callback_object()])
-                        .await?;
+                    let called = call_replacement_function(
+                        function,
+                        focus.clone(),
+                        matched.callback_object(),
+                    )
+                    .await?;
                     match called {
                         JsonValue::String(text) => text,
                         other => {
@@ -167,7 +211,7 @@ pub(crate) async fn replace_function_impl(
                     replacement_string_from_match(&replacement_literal, &matched)
                 };
                 result.push_str(&replacement_value);
-                let end = start.saturating_add(matched.match_text.len()).min(input_text.len());
+                let end = matched.end.max(start).min(input_text.len());
                 position = end;
                 count += 1;
 
@@ -186,6 +230,224 @@ pub(crate) async fn replace_function_impl(
             "Argument 2 of function replace must be string or function",
         )),
     }
+}
+
+pub(crate) async fn contains_function_impl(
+    focus: FunctionContext,
+    input: JsonValue,
+    token: JsonValue,
+) -> std::result::Result<JsonValue, JsonError> {
+    if matches!(input, JsonValue::Undefined) {
+        return Ok(JsonValue::Undefined);
+    }
+
+    let input_text = match input {
+        JsonValue::String(text) => text,
+        _ => {
+            return Err(JsonError::new(
+                "T0410",
+                "Argument 1 of function contains must be string",
+            ))
+        }
+    };
+
+    match token {
+        JsonValue::String(pattern) => Ok(JsonValue::Bool(input_text.contains(&pattern))),
+        JsonValue::Object(_) => {
+            let (source, flags) = regex_pattern_from_matcher(&token).ok_or_else(|| {
+                JsonError::new("T0410", "Argument 2 of function contains must be string or function")
+            })?;
+            let regex = build_rust_regex(&source, &flags)?;
+            Ok(JsonValue::Bool(regex.is_match(&input_text)))
+        }
+        JsonValue::Function(matcher) => {
+            let matched = evaluate_matcher(focus, &matcher, Some(input_text)).await?;
+            Ok(JsonValue::Bool(matched.is_some()))
+        }
+        _ => Err(JsonError::new(
+            "T0410",
+            "Argument 2 of function contains must be string or function",
+        )),
+    }
+}
+
+pub(crate) async fn split_function_impl(
+    focus: FunctionContext,
+    input: JsonValue,
+    separator: JsonValue,
+    limit: JsonValue,
+) -> std::result::Result<JsonValue, JsonError> {
+    if matches!(input, JsonValue::Undefined) {
+        return Ok(JsonValue::Undefined);
+    }
+
+    let input_text = match input {
+        JsonValue::String(text) => text,
+        _ => {
+            return Err(JsonError::new(
+                "T0410",
+                "Argument 1 of function split must be string",
+            ))
+        }
+    };
+
+    let limit_value = match limit {
+        JsonValue::Undefined => None,
+        JsonValue::Number(num) => Some(num),
+        _ => return Err(JsonError::new("T0410", "Argument 3 of function split must be number")),
+    };
+    if let Some(value) = limit_value {
+        if value < 0.0 {
+            return Err(JsonError::new(
+                "D3020",
+                "Third argument of split function must evaluate to a positive number",
+            ));
+        }
+    }
+    if limit_value.is_some_and(|value| !(value > 0.0)) {
+        return Ok(JsonValue::Array(JsonArray::new(Vec::new(), false, false)));
+    }
+
+    let max_items = limit_value.map(|value| {
+        if value.is_finite() {
+            value.trunc().max(0.0) as usize
+        } else {
+            usize::MAX
+        }
+    });
+
+    match separator {
+        JsonValue::String(separator_text) => {
+            let result: Vec<JsonValue> = if separator_text.is_empty() {
+                let iter = input_text.chars().map(|ch| JsonValue::String(ch.to_string()));
+                match max_items {
+                    Some(max) => iter.take(max).collect(),
+                    None => iter.collect(),
+                }
+            } else {
+                let iter = input_text
+                    .split(&separator_text)
+                    .map(|part| JsonValue::String(part.to_owned()));
+                match max_items {
+                    Some(max) => iter.take(max).collect(),
+                    None => iter.collect(),
+                }
+            };
+            Ok(JsonValue::Array(JsonArray::new(result, false, false)))
+        }
+        JsonValue::Object(_) => {
+            let (source, flags) = regex_pattern_from_matcher(&separator).ok_or_else(|| {
+                JsonError::new("T0410", "Argument 2 of function split must be string or function")
+            })?;
+            let regex = build_rust_regex(&source, &flags)?;
+            let mut result: Vec<JsonValue> = Vec::new();
+            let mut start = 0usize;
+            let mut count = 0usize;
+            for matched in regex.find_iter(&input_text) {
+                if max_items.is_some_and(|max| count >= max) {
+                    break;
+                }
+                if matched.as_str().is_empty() {
+                    return Err(JsonError::new(
+                        "D1004",
+                        "Regular expression matches zero length string",
+                    ));
+                }
+                result.push(JsonValue::String(input_text[start..matched.start()].to_owned()));
+                start = matched.end();
+                count += 1;
+            }
+            if !max_items.is_some_and(|max| count >= max) {
+                result.push(JsonValue::String(input_text[start..].to_owned()));
+            }
+            Ok(JsonValue::Array(JsonArray::new(result, false, false)))
+        }
+        JsonValue::Function(matcher) => {
+            let mut result: Vec<JsonValue> = Vec::new();
+            let mut count = 0usize;
+            let mut start = 0usize;
+            let mut current_match =
+                evaluate_matcher(focus.clone(), &matcher, Some(input_text.clone())).await?;
+
+            while let Some(matched) = current_match {
+                if max_items.is_some_and(|max| count >= max) {
+                    break;
+                }
+                if matched.match_text.is_empty() {
+                    return Err(JsonError::new(
+                        "D1004",
+                        "Regular expression matches zero length string",
+                    ));
+                }
+                let match_start = matched.start.max(start).min(input_text.len());
+                let match_end = matched.end.max(match_start).min(input_text.len());
+                result.push(JsonValue::String(input_text[start..match_start].to_owned()));
+                start = match_end;
+                count += 1;
+                current_match = if let Some(next_matcher) = &matched.next {
+                    evaluate_matcher(focus.clone(), next_matcher, None).await?
+                } else {
+                    None
+                };
+            }
+
+            if !max_items.is_some_and(|max| count >= max) {
+                result.push(JsonValue::String(input_text[start..].to_owned()));
+            }
+            Ok(JsonValue::Array(JsonArray::new(result, false, false)))
+        }
+        _ => Err(JsonError::new(
+            "T0410",
+            "Argument 2 of function split must be string or function",
+        )),
+    }
+}
+
+pub(crate) fn join_function_impl(
+    values: JsonValue,
+    separator: JsonValue,
+) -> std::result::Result<JsonValue, JsonError> {
+    if matches!(values, JsonValue::Undefined) {
+        return Ok(JsonValue::Undefined);
+    }
+
+    let sep = match separator {
+        JsonValue::Undefined => String::new(),
+        JsonValue::String(text) => text,
+        _ => {
+            return Err(JsonError::new(
+                "T0410",
+                "Argument 2 of function join must be string",
+            ))
+        }
+    };
+
+    let array = match values {
+        JsonValue::String(text) => vec![text],
+        JsonValue::Array(array) => {
+            let mut output: Vec<String> = Vec::with_capacity(array.elements.len());
+            for value in array.elements {
+                match value {
+                    JsonValue::String(text) => output.push(text),
+                    _ => {
+                        return Err(JsonError::new(
+                            "T0412",
+                            "Argument 1 of function join must be an array of strings",
+                        ))
+                    }
+                }
+            }
+            output
+        }
+        _ => {
+            return Err(JsonError::new(
+                "T0412",
+                "Argument 1 of function join must be an array of strings",
+            ))
+        }
+    };
+
+    Ok(JsonValue::String(array.join(&sep)))
 }
 
 pub(crate) async fn match_function_impl(

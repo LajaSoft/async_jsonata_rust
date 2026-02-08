@@ -14,8 +14,14 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
         )),
         ValueType::Function => {
             let js_func = JsFunction::try_from_unknown(value)?;
+            let mut jsonata_apply_adapter = false;
 
             if let Ok(js_obj) = js_func.coerce_to_object() {
+                if js_obj.has_named_property("__jsonata_apply_adapter")? {
+                    let marker: JsUnknown = js_obj.get_named_property("__jsonata_apply_adapter")?;
+                    jsonata_apply_adapter = matches!(marker.get_type()?, ValueType::Boolean)
+                        && marker.coerce_to_bool()?;
+                }
                 if let Some((source, flags)) = extract_regex_meta_from_function_object(&js_obj)? {
                     return Ok(JsonValue::Object(JsonObject(vec![
                         ("__jsonata_regex_source".to_owned(), JsonValue::String(source)),
@@ -85,7 +91,7 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
                 }
             }
 
-            let callable = JsFunctionCallable::new(env, js_func)?;
+            let callable = JsFunctionCallable::new_with_mode(env, js_func, jsonata_apply_adapter)?;
             Ok(JsonValue::Function(JsonFunction::new(Arc::new(callable))))
         }
         ValueType::Object => {
@@ -138,6 +144,8 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
                     if object.has_named_property("apply")? {
                         let apply_value: JsUnknown = object.get_named_property("apply")?;
                         if matches!(apply_value.get_type()?, ValueType::Function) {
+                            let mut apply_object = apply_value.coerce_to_object()?;
+                            apply_object.set_named_property("__jsonata_apply_adapter", true)?;
                             return js_unknown_to_json_value(env, apply_value);
                         }
                     }
