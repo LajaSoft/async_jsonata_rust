@@ -260,32 +260,97 @@ impl<F: Formatter> Formatter for JsonataFormatter<F> {
 }
 
 fn format_js_number(value: f64) -> String {
-    let value = normalize_js_number(value);
+    fn round_to_precision_15(input: f64) -> f64 {
+        let scientific = format!("{:.14e}", input);
+        scientific.parse::<f64>().unwrap_or(input)
+    }
+
+    fn scientific_to_decimal(scientific: &str) -> Option<String> {
+        let lower = scientific.to_ascii_lowercase();
+        let (mantissa, exponent_str) = lower.split_once('e')?;
+        let exponent = exponent_str.parse::<i32>().ok()?;
+
+        let negative = mantissa.starts_with('-');
+        let digits_only: String = mantissa
+            .trim_start_matches('-')
+            .chars()
+            .filter(|c| *c != '.')
+            .collect();
+        let decimal_pos = mantissa
+            .trim_start_matches('-')
+            .find('.')
+            .unwrap_or(mantissa.trim_start_matches('-').len()) as i32;
+        let new_pos = decimal_pos + exponent;
+
+        let mut out = if new_pos <= 0 {
+            format!("0.{}{}", "0".repeat((-new_pos) as usize), digits_only)
+        } else if new_pos as usize >= digits_only.len() {
+            format!("{}{}", digits_only, "0".repeat(new_pos as usize - digits_only.len()))
+        } else {
+            let idx = new_pos as usize;
+            format!("{}.{}", &digits_only[..idx], &digits_only[idx..])
+        };
+
+        while out.ends_with('0') && out.contains('.') {
+            out.pop();
+        }
+        if out.ends_with('.') {
+            out.pop();
+        }
+        if negative && out != "0" {
+            out.insert(0, '-');
+        }
+        Some(out)
+    }
+
+    let value = round_to_precision_15(normalize_js_number(value));
     if value == 0.0 {
         return "0".to_owned();
     }
 
-    if value.fract() == 0.0 && value.abs() < 1e21 {
-        let formatted = format!("{:.0}", value);
-        return if formatted == "-0" {
-            "0".to_owned()
+    let abs = value.abs();
+    if abs >= 1e-6 && abs < 1e21 {
+        let mut buffer = Buffer::new();
+        let rendered = buffer.format_finite(value).to_owned();
+        let mut fixed = if rendered.contains('e') || rendered.contains('E') {
+            scientific_to_decimal(&rendered).unwrap_or(rendered)
         } else {
-            formatted
+            rendered
         };
+        if fixed.contains('.') {
+            while fixed.ends_with('0') {
+                fixed.pop();
+            }
+            if fixed.ends_with('.') {
+                fixed.pop();
+            }
+        }
+        if fixed == "-0" {
+            return "0".to_owned();
+        }
+        return fixed;
     }
 
-    let mut buffer = Buffer::new();
-    let mut formatted = buffer.format_finite(value).to_owned();
-    if let Some(pos) = formatted.find('e') {
-        let exponent = &formatted[pos + 1..];
-        if !exponent.starts_with('-') && !exponent.starts_with('+') {
-            formatted.insert(pos + 1, '+');
-        }
+    let scientific = format!("{:.14e}", value);
+    let mut parts = scientific.split('e');
+    let mut mantissa = parts.next().unwrap_or("0").to_owned();
+    while mantissa.ends_with('0') {
+        mantissa.pop();
     }
-    if formatted == "-0" {
-        formatted = "0".to_owned();
+    if mantissa.ends_with('.') {
+        mantissa.pop();
     }
-    formatted
+    let exponent = parts
+        .next()
+        .and_then(|exp| exp.parse::<i32>().ok())
+        .unwrap_or(0);
+
+    let formatted = format!("{}e{:+}", mantissa, exponent);
+    if formatted == "-0e+0" {
+        "0".to_owned()
+    } else {
+        formatted
+    }
 }
 
 fn write_js_number<W>(writer: &mut W, value: f64) -> io::Result<()>
@@ -304,7 +369,7 @@ fn to_jsonata_value(value: &JsonValue) -> Result<Value, JsonError> {
         JsonValue::Number(num) => {
             if !num.is_finite() {
                 return Err(JsonError::new(
-                    "D3001",
+                    "D1001",
                     format!("Unable to represent number {}", num),
                 ));
             }
@@ -327,6 +392,13 @@ fn to_jsonata_value(value: &JsonValue) -> Result<Value, JsonError> {
             Ok(Value::Array(converted))
         }
         JsonValue::Object(JsonObject(entries)) => {
+            let is_function_object = entries.iter().any(|(key, entry_value)| {
+                (key == "_jsonata_function" || key == "_jsonata_lambda")
+                    && matches!(entry_value, JsonValue::Bool(true))
+            });
+            if is_function_object {
+                return Ok(Value::String(String::new()));
+            }
             let mut map = Map::new();
             for (key, entry_value) in entries {
                 if matches!(entry_value, JsonValue::Undefined) {
@@ -336,10 +408,7 @@ fn to_jsonata_value(value: &JsonValue) -> Result<Value, JsonError> {
             }
             Ok(Value::Object(map))
         }
-        JsonValue::Function(_) => Err(JsonError::new(
-            "D3137",
-            "Unable to serialise function value",
-        )),
+        JsonValue::Function(_) => Ok(Value::String(String::new())),
     }
 }
 
@@ -371,7 +440,7 @@ fn ensure_string(value: &JsonValue, prettify: bool) -> Result<Option<String>, Js
                     format!("Unable to represent number {}", num),
                 ))
             } else {
-                Ok(Some(num.to_string()))
+                Ok(Some(format_js_number(*num)))
             }
         }
         JsonValue::String(text) => Ok(Some(text.clone())),

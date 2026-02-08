@@ -226,6 +226,12 @@ pub fn number(value: &JsonValue) -> Result<JsonValue, JsonError> {
                     None
                 }
             }) {
+                if !parsed.is_finite() {
+                    return Err(JsonError::new(
+                        "D3030",
+                        format!("Unable to cast '{}' to a number", text),
+                    ));
+                }
                 Ok(JsonValue::Number(parsed))
             } else {
                 Err(JsonError::new(
@@ -252,6 +258,10 @@ pub fn ceil(value: Option<f64>) -> Option<f64> {
 }
 
 pub fn round(value: Option<f64>, precision: Option<f64>) -> Option<f64> {
+    fn math_round_js(input: f64) -> f64 {
+        (input + 0.5).floor()
+    }
+
     let value = value?;
     let precision = precision.filter(|p| *p != 0.0 && !p.is_nan());
 
@@ -260,7 +270,7 @@ pub fn round(value: Option<f64>, precision: Option<f64>) -> Option<f64> {
         shifted = shift_decimal(value, p);
     }
 
-    let mut result = shifted.round();
+    let mut result = math_round_js(shifted);
     let diff = result - shifted;
     if diff.abs() == 0.5 && (result % 2.0).abs() == 1.0 {
         result -= 1.0;

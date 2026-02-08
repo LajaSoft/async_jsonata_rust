@@ -207,7 +207,7 @@ fn boolean_internal(value: &JsonValue) -> JsonValue {
             }
         },
         JsonValue::Object(JsonObject(props)) => JsonValue::Bool(!props.is_empty()),
-        JsonValue::Function(_) => JsonValue::Bool(true),
+        JsonValue::Function(_) => JsonValue::Bool(false),
     }
 }
 
@@ -899,10 +899,7 @@ pub fn distinct(value: &JsonValue) -> Result<JsonValue, JsonError> {
                 array.outer_wrapper,
             )))
         }
-        _ => Err(JsonError::new(
-            "D3050",
-            "$distinct() expects the argument to be an array",
-        )),
+        _ => Ok(value.clone()),
     }
 }
 

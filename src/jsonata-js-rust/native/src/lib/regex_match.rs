@@ -420,7 +420,7 @@ pub(crate) fn join_function_impl(
 }
 
 pub(crate) async fn match_function_impl(
-    _focus: FunctionContext,
+    focus: FunctionContext,
     input: JsonValue,
     matcher: JsonValue,
     limit: JsonValue,
@@ -435,16 +435,6 @@ pub(crate) async fn match_function_impl(
             return Err(JsonError::new(
                 "T0410",
                 format!("Argument 1 of function match must be string, got {:?}", other),
-            ))
-        }
-    };
-
-    let (source, flags) = match regex_pattern_from_matcher(&matcher) {
-        Some(value) => value,
-        None => {
-            return Err(JsonError::new(
-                "T0410",
-                "Argument 2 of function match must be function",
             ))
         }
     };
@@ -464,7 +454,6 @@ pub(crate) async fn match_function_impl(
         }
     }
 
-    let regex = build_rust_regex(&source, &flags)?;
     let mut results: Vec<JsonValue> = Vec::new();
     let max_matches =
         limit_value.and_then(|value| if value.is_finite() { Some(value.max(0.0) as usize) } else { None });
@@ -473,30 +462,74 @@ pub(crate) async fn match_function_impl(
         return Ok(JsonValue::Array(JsonArray::new(results, true, false)));
     }
 
-    for captures in regex.captures_iter(&input_text) {
-        if let Some(max) = max_matches {
-            if results.len() >= max {
-                break;
+    match matcher {
+        JsonValue::Object(_) => {
+            let (source, flags) = regex_pattern_from_matcher(&matcher).ok_or_else(|| {
+                JsonError::new("T0410", "Argument 2 of function match must be function")
+            })?;
+            let regex = build_rust_regex(&source, &flags)?;
+
+            for captures in regex.captures_iter(&input_text) {
+                if let Some(max) = max_matches {
+                    if results.len() >= max {
+                        break;
+                    }
+                }
+                let full_match = match captures.get(0) {
+                    Some(value) => value,
+                    None => continue,
+                };
+                let groups = captures
+                    .iter()
+                    .skip(1)
+                    .map(|group| match group {
+                        Some(value) => JsonValue::String(value.as_str().to_owned()),
+                        None => JsonValue::Undefined,
+                    })
+                    .collect::<Vec<JsonValue>>();
+
+                results.push(matcher_result_to_object(
+                    full_match.as_str().to_owned(),
+                    full_match.start() as f64,
+                    groups,
+                ));
             }
         }
-        let full_match = match captures.get(0) {
-            Some(value) => value,
-            None => continue,
-        };
-        let groups = captures
-            .iter()
-            .skip(1)
-            .map(|group| match group {
-                Some(value) => JsonValue::String(value.as_str().to_owned()),
-                None => JsonValue::Undefined,
-            })
-            .collect::<Vec<JsonValue>>();
-
-        results.push(matcher_result_to_object(
-            full_match.as_str().to_owned(),
-            full_match.start() as f64,
-            groups,
-        ));
+        JsonValue::Function(matcher_fn) => {
+            let mut current_match =
+                evaluate_matcher(focus.clone(), &matcher_fn, Some(input_text.clone())).await?;
+            while let Some(matched) = current_match {
+                if let Some(max) = max_matches {
+                    if results.len() >= max {
+                        break;
+                    }
+                }
+                let groups = matched
+                    .groups
+                    .iter()
+                    .map(|group| match group {
+                        Some(value) => JsonValue::String(value.clone()),
+                        None => JsonValue::Undefined,
+                    })
+                    .collect::<Vec<JsonValue>>();
+                results.push(matcher_result_to_object(
+                    matched.match_text.clone(),
+                    matched.start as f64,
+                    groups,
+                ));
+                current_match = if let Some(next_matcher) = &matched.next {
+                    evaluate_matcher(focus.clone(), next_matcher, None).await?
+                } else {
+                    None
+                };
+            }
+        }
+        _ => {
+            return Err(JsonError::new(
+                "T0410",
+                "Argument 2 of function match must be function",
+            ))
+        }
     }
 
     Ok(JsonValue::Array(JsonArray::new(results, true, false)))
