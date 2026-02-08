@@ -757,6 +757,14 @@ pub fn spread(value: &JsonValue) -> JsonValue {
             JsonValue::Array(JsonArray::new(aggregated, true, false))
         }
         JsonValue::Object(JsonObject(entries)) => {
+            let is_lambda_object = entries.iter().any(|(key, value)| {
+                (key == "_jsonata_lambda" || key == "_jsonata_function")
+                    && matches!(value, JsonValue::Bool(true))
+            });
+            if is_lambda_object {
+                return JsonValue::Object(JsonObject(entries.clone()));
+            }
+
             let mut aggregated: Vec<JsonValue> = Vec::with_capacity(entries.len());
             for (key, value) in entries {
                 aggregated.push(JsonValue::Object(JsonObject(vec![(

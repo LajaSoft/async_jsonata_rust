@@ -27,6 +27,30 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    fn token_value_for_error(token: &TokenData) -> Value {
+        match &token.value {
+            Value::String(text) => Value::String(text.clone()),
+            Value::Number(num) => {
+                if let Some(int) = num.as_i64() {
+                    return Value::String(int.to_string());
+                }
+                if let Some(uint) = num.as_u64() {
+                    return Value::String(uint.to_string());
+                }
+                if let Some(float) = num.as_f64() {
+                    if float.is_finite() && float.fract() == 0.0 {
+                        return Value::String(format!("{:.0}", float));
+                    }
+                    return Value::String(float.to_string());
+                }
+                Value::String(token.id.clone())
+            }
+            Value::Bool(flag) => Value::String(flag.to_string()),
+            Value::Null => Value::String("null".to_string()),
+            _ => Value::String(token.id.clone()),
+        }
+    }
+
     pub fn new(source: &'a str, recover: bool) -> Result<Self, ParserError> {
         let mut parser = Self {
             source,
@@ -134,7 +158,7 @@ impl<'a> Parser<'a> {
                 break;
             }
             let token = current.clone();
-            self.advance(true)?;
+            self.advance(false)?;
             left = match self.led(token, left.clone()) {
                 Ok(node) => node,
                 Err(err) => {
@@ -478,7 +502,13 @@ impl<'a> Parser<'a> {
             )
         })?;
         Ok(token.map(|t| TokenData {
-            id: t.text.clone(),
+            id: match t.kind {
+                TokenKind::Operator => t.text.clone(),
+                TokenKind::Regex => "(regex)".to_string(),
+                TokenKind::Number | TokenKind::String | TokenKind::Value => "(literal)".to_string(),
+                TokenKind::Name | TokenKind::Variable => t.text.clone(),
+                TokenKind::Eof => "(end)".to_string(),
+            },
             token_type: match t.kind {
                 TokenKind::Operator => "operator".to_string(),
                 TokenKind::Number => "number".to_string(),
@@ -956,7 +986,7 @@ impl<'a> Parser<'a> {
             if current.id != id {
                 let code = if current.id == "(end)" { "S0203" } else { "S0202" };
                 let err = ParserError::new(code, current.position)
-                    .with_token(Value::String(current.id.clone()))
+                    .with_token(Self::token_value_for_error(current))
                     .with_value(Value::String(id.to_string()));
                 if self.recover {
                     self.push_error(err, true, None, true);

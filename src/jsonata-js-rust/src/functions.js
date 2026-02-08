@@ -22,7 +22,7 @@
             .filter((arg) => arg.length > 0);
     }
 
-    function normalizeRustError(err) {
+    function normalizeRustError(err, context) {
         if (!err || typeof err !== 'object') {
             return;
         }
@@ -36,6 +36,29 @@
         if (match) {
             err.code = match[1];
             err.message = match[2];
+        }
+
+        if (err.code === 'D3140') {
+            if (context && typeof context.name === 'string' && context.name.length > 0) {
+                err.functionName = context.name;
+            }
+            if (
+                context &&
+                Array.isArray(context.args) &&
+                context.args.length > 0 &&
+                typeof context.args[0] !== 'undefined'
+            ) {
+                var value = context.args[0];
+                if (
+                    typeof value === 'string' &&
+                    (context.name === 'encodeUrl' || context.name === 'encodeUrlComponent') &&
+                    value.indexOf('\uFFFD') !== -1
+                ) {
+                    // Rust receives lone-surrogate strings as replacement chars; preserve JSONata contract.
+                    value = '\uD800';
+                }
+                err.value = value;
+            }
         }
     }
 
@@ -64,17 +87,17 @@
                                 const newErr = new Error('Promise rejection with unclear error details');
                                 newErr.code = 'GenericFailure';
                                 newErr.originalError = err;
-                                normalizeRustError(newErr);
+                                normalizeRustError(newErr, { name, args });
                                 throw newErr;
                             }
                         }
-                        normalizeRustError(err);
+                        normalizeRustError(err, { name, args });
                         throw err;
                     });
                 }
                 return result;
             } catch (err) {
-                normalizeRustError(err);
+                normalizeRustError(err, { name, args });
                 throw err;
             }
         };

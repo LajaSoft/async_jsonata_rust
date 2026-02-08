@@ -443,10 +443,7 @@ pub fn string(value: &JsonValue, prettify: bool) -> Result<JsonValue, JsonError>
             }
         }
         JsonValue::Function(_) => {
-            return Err(JsonError::new(
-                "D3137",
-                "Unable to convert function to string",
-            ))
+            return Ok(JsonValue::String(String::new()));
         }
         _ => {}
     }
@@ -493,10 +490,7 @@ pub fn string(value: &JsonValue, prettify: bool) -> Result<JsonValue, JsonError>
                 .map_err(|err| JsonError::new("D3137", err.to_string()))?;
             Ok(JsonValue::String(result))
         }
-        JsonValue::Function(_) => Err(JsonError::new(
-            "D3137",
-            "Unable to convert function to string",
-        )),
+        JsonValue::Function(_) => Ok(JsonValue::String(String::new())),
     }
 }
 
@@ -568,6 +562,12 @@ pub fn encode_url_component(value: &JsonValue) -> Result<JsonValue, JsonError> {
         return Ok(JsonValue::Undefined);
     }
     let text = coerce_to_string(value)?;
+    if text.contains('\u{FFFD}') {
+        return Err(JsonError::new(
+            "D3140",
+            format!("Malformed URL passed to $encodeUrlComponent(): {:?}", text),
+        ));
+    }
     let encoded = utf8_percent_encode(&text, ENCODE_URI_COMPONENT).to_string();
     Ok(JsonValue::String(encoded))
 }
@@ -577,6 +577,12 @@ pub fn encode_url(value: &JsonValue) -> Result<JsonValue, JsonError> {
         return Ok(JsonValue::Undefined);
     }
     let text = coerce_to_string(value)?;
+    if text.contains('\u{FFFD}') {
+        return Err(JsonError::new(
+            "D3140",
+            format!("Malformed URL passed to $encodeUrl(): {:?}", text),
+        ));
+    }
     let encoded = utf8_percent_encode(&text, ENCODE_URI).to_string();
     Ok(JsonValue::String(encoded))
 }
@@ -589,13 +595,13 @@ fn decode_uri_value(value: &JsonValue, function_name: &str) -> Result<JsonValue,
     let decoded_bytes = strict_percent_decode(&text).map_err(|_| {
         JsonError::new(
             "D3140",
-            format!("{} encountered malformed escape sequence", function_name),
+            format!("Malformed URL passed to {}(): {:?}", function_name, text),
         )
     })?;
     let decoded_string = String::from_utf8(decoded_bytes).map_err(|_| {
         JsonError::new(
             "D3140",
-            format!("{} encountered invalid UTF-8 data", function_name),
+            format!("Malformed URL passed to {}(): {:?}", function_name, text),
         )
     })?;
     Ok(JsonValue::String(decoded_string))

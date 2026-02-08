@@ -351,11 +351,63 @@ impl<'a> Tokenizer<'a> {
                                 token: None,
                             })?;
                         self.position += 4;
-                        char::from_u32(codepoint).ok_or(TokenizerError {
-                            code: "S0104",
-                            position: self.position,
-                            token: None,
-                        })?
+
+                        // JSONata's JS tokenizer accepts UTF-16 surrogate pairs in \u escapes.
+                        if (0xD800..=0xDBFF).contains(&codepoint) {
+                            let pair_slash = end;
+                            let pair_u = end + 1;
+                            let low_start = end + 2;
+                            let low_end = end + 6;
+                            if low_end <= self.length
+                                && self.chars.get(pair_slash) == Some(&'\\')
+                                && self.chars.get(pair_u) == Some(&'u')
+                            {
+                                let low_octets = self.slice(low_start, low_end);
+                                if low_octets.chars().all(|c| c.is_ascii_hexdigit()) {
+                                    let low_codepoint = u32::from_str_radix(&low_octets, 16)
+                                        .map_err(|_| TokenizerError {
+                                            code: "S0104",
+                                            position: self.position,
+                                            token: None,
+                                        })?;
+                                    if (0xDC00..=0xDFFF).contains(&low_codepoint) {
+                                        self.position += 6;
+                                        let high_ten = codepoint - 0xD800;
+                                        let low_ten = low_codepoint - 0xDC00;
+                                        let scalar = 0x10000 + ((high_ten << 10) | low_ten);
+                                        char::from_u32(scalar).ok_or(TokenizerError {
+                                            code: "S0104",
+                                            position: self.position,
+                                            token: None,
+                                        })?
+                                    } else {
+                                        return Err(TokenizerError {
+                                            code: "S0104",
+                                            position: self.position,
+                                            token: None,
+                                        });
+                                    }
+                                } else {
+                                    return Err(TokenizerError {
+                                        code: "S0104",
+                                        position: self.position,
+                                        token: None,
+                                    });
+                                }
+                            } else {
+                                return Err(TokenizerError {
+                                    code: "S0104",
+                                    position: self.position,
+                                    token: None,
+                                });
+                            }
+                        } else {
+                            char::from_u32(codepoint).ok_or(TokenizerError {
+                                code: "S0104",
+                                position: self.position,
+                                token: None,
+                            })?
+                        }
                     }
                     other => {
                         return Err(TokenizerError {

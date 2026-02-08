@@ -443,6 +443,15 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
                     outer_wrapper,
                 )))
             } else {
+                if is_jsonata_function_object(&object)? {
+                    if object.has_named_property("apply")? {
+                        let apply_value: JsUnknown = object.get_named_property("apply")?;
+                        if matches!(apply_value.get_type()?, ValueType::Function) {
+                            return js_unknown_to_json_value(env, apply_value);
+                        }
+                    }
+                }
+
                 let property_names = object.get_property_names()?;
                 let total = property_names.get_array_length()?;
                 let mut props = Vec::with_capacity(total as usize);
@@ -467,7 +476,7 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
     }
 }
 
-fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUnknown<'_>> {
+pub(crate) fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUnknown<'_>> {
     match value {
         JsonValue::Undefined => undefined(env),
         JsonValue::Null => null(env),

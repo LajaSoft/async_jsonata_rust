@@ -76,15 +76,15 @@ fn arg_to_jsonata_value(ctx: &FunctionCallContext, index: usize) -> napi::Result
 }
 
 fn arg_to_json_value(ctx: &FunctionCallContext, index: usize) -> napi::Result<JsonValue> {
-    // Конвертируем через JsonataValue для совместимости
-    let jsonata_val = arg_to_jsonata_value(ctx, index)?;
-    crate::conversion::jsonata_value_to_json_value(ctx.env, jsonata_val)
+    if index >= ctx.length() {
+        return Ok(JsonValue::Undefined);
+    }
+    let value: Unknown = ctx.get(index)?;
+    crate::js_unknown_to_json_value(ctx.env, value)
 }
 
 fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<Unknown<'_>> {
-    // Конвертируем через JsonataValue для совместимости
-    let jsonata_val = crate::conversion::json_value_to_jsonata_value(value);
-    crate::conversion::jsonata_value_to_js(env, jsonata_val)
+    crate::json_value_to_js(env, value)
 }
 
 fn register_error(env: &Env, exports: &mut Object) -> napi::Result<()> {
@@ -204,12 +204,9 @@ macro_rules! create_core_function {
                 let func = env.create_function_from_closure::<(), sys::napi_value, _>(
                     stringify!($name),
                     |ctx| {
-                        // Получаем JsonataValue, конвертируем в JsonValue, вызываем функцию, конвертируем обратно
-                        let jsonata_value = arg_to_jsonata_value(&ctx, 0)?;
-                        let json_value = crate::conversion::jsonata_value_to_json_value(ctx.env, jsonata_value)?;
+                        let json_value = arg_to_json_value(&ctx, 0)?;
                         let result = $impl_fn(&json_value);
-                        let jsonata_result = crate::conversion::json_value_to_jsonata_value(result);
-                        map_unknown(crate::conversion::jsonata_value_to_js(ctx.env, jsonata_result))
+                        map_unknown(json_value_to_js(ctx.env, result))
                     }
                 )?;
                 exports.set_named_property(stringify!($name), func)?;
