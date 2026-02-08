@@ -84,3 +84,11 @@ Rust-native reimplementation of the JSONata query language with full compatibili
 
 ## License
 `async_jsonata_rs` will follow the upstream JSONata licensing model (currently MIT). Final licensing details will be confirmed before the first release.
+
+## Acknowledgements
+- [JSONata](https://jsonata.org/) — the original project and specification.
+- [napi-rs](https://napi.rs/) — for enabling seamless Rust <
+→ Node.js interoperability.
+
+- project source contins clone of JSONata repository maintained by [JSONata Limited](https://jsonata.org/).
+
