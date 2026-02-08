@@ -334,12 +334,21 @@ fn attach_promise_handlers(env: &Env, promise: JsUnknown, sender: SharedSender) 
             "D3138"
         } else if code == "D3139" {
             "D3139"
+        } else if code == "T2007" {
+            "T2007"
+        } else if code == "T2008" {
+            "T2008"
         } else if code.starts_with('D') && code.len() == 5 {
             "JS"
         } else {
             "JS"
         };
-        reject_sender.send(Err(JsonError::new(static_code, message)));
+        let full_message = if static_code == "JS" && code != "JS" {
+            format!("{}: {}", code, message)
+        } else {
+            message
+        };
+        reject_sender.send(Err(JsonError::new(static_code, full_message)));
 
         map_unknown(undefined(ctx.env))
     })?;

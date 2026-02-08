@@ -313,6 +313,72 @@ pub fn sort_default(array: &JsonValue) -> Result<JsonValue, JsonError> {
     )))
 }
 
+pub async fn sort(
+    ctx: FunctionContext,
+    array: JsonValue,
+    comparator: JsonValue,
+) -> Result<JsonValue, JsonError> {
+    let input_array = match array {
+        JsonValue::Undefined => return Ok(JsonValue::Undefined),
+        JsonValue::Array(arr) => arr,
+        _ => {
+            return Err(JsonError::new(
+                "D3070",
+                "Sort expects an array as the first argument",
+            ))
+        }
+    };
+
+    if input_array.elements.len() <= 1 {
+        return Ok(JsonValue::Array(JsonArray::new(
+            input_array.elements.clone(),
+            input_array.is_sequence,
+            input_array.outer_wrapper,
+        )));
+    }
+
+    if matches!(comparator, JsonValue::Undefined | JsonValue::Null) {
+        return sort_default(&JsonValue::Array(input_array));
+    }
+
+    let callable = match comparator {
+        JsonValue::Function(func) => func,
+        _ => {
+            return Err(JsonError::new(
+                "D3070",
+                "Comparator must be a function",
+            ))
+        }
+    };
+
+    let mut sorted: Vec<JsonValue> = Vec::with_capacity(input_array.elements.len());
+
+    for item in input_array.elements {
+        let mut insert_index = sorted.len();
+        while insert_index > 0 {
+            let args = build_hof_args(
+                &callable,
+                sorted[insert_index - 1].clone(),
+                Some(item.clone()),
+                None,
+            );
+            let decision = callable.call(ctx.clone(), args).await?;
+            let should_swap = matches!(boolean(&decision), JsonValue::Bool(true));
+            if !should_swap {
+                break;
+            }
+            insert_index -= 1;
+        }
+        sorted.insert(insert_index, item);
+    }
+
+    Ok(JsonValue::Array(JsonArray::new(
+        sorted,
+        input_array.is_sequence,
+        input_array.outer_wrapper,
+    )))
+}
+
 fn build_hof_args(
     callable: &JsonFunction,
     first: JsonValue,

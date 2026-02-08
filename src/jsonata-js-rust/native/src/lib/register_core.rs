@@ -173,28 +173,18 @@ pub(crate) fn register_core(env: &Env, exports: &mut JsObject) -> napi::Result<(
 
     let sort_fn = env.create_function_from_closure::<(), sys::napi_value, _>("sort", |ctx| {
         let array = arg_to_json_value(&ctx, 0)?;
-        if ctx.length() > 1 {
-            let comparator: JsUnknown = ctx.get(1)?;
-            match comparator.get_type()? {
-                ValueType::Undefined | ValueType::Null => {}
-                ValueType::Function => {
-                    return Err(Error::new(
-                        Status::GenericFailure,
-                        "Rust sort does not yet support comparator functions",
-                    ));
-                }
-                _ => {
-                    return Err(Error::new(
-                        Status::GenericFailure,
-                        "Comparator must be a function",
-                    ));
-                }
-            }
-        }
-        match core_impl::sort_default(&array) {
-            Ok(result) => map_unknown(json_value_to_js(ctx.env, result)),
-            Err(err) => Err(json_error_to_napi(err)),
-        }
+        let comparator = arg_to_json_value(&ctx, 1)?;
+        let focus = function_context_from_this(&ctx)?;
+        ctx.env
+            .spawn_future_with_callback(
+                async move {
+                    core_impl::sort(focus, array, comparator)
+                        .await
+                        .map_err(json_error_to_napi)
+                },
+                |env, result| json_value_to_js(env, result),
+            )
+            .map(|promise| promise.raw())
     })?;
     exports.set_named_property("sort", sort_fn)?;
 

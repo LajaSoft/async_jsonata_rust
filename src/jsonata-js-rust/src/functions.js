@@ -81,6 +81,11 @@
             err.code = match[1];
             err.message = match[2];
         }
+        const prefixedMatch = /^JS:\s*([A-Z]\d{4}):\s*(.*)$/.exec(err.message);
+        if (prefixedMatch) {
+            err.code = prefixedMatch[1];
+            err.message = prefixedMatch[2];
+        }
 
         if (err.code === 'D3140') {
             if (context && typeof context.name === 'string' && context.name.length > 0) {
