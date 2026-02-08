@@ -152,6 +152,17 @@ impl<'a> Parser<'a> {
     }
 
     fn nud(&mut self, token: TokenData) -> Result<AstNode, ParserError> {
+        if token.token_type == "operator"
+            && matches!(token.id.as_str(), "and" | "or" | "in" | "?")
+        {
+            return Ok(AstNode::new(
+                token.id,
+                token.token_type,
+                token.value,
+                token.position,
+            ));
+        }
+
         match token.token_type.as_str() {
             "name" | "number" | "string" | "value" | "regex" | "literal" | "variable" => {
                 return Ok(AstNode::new(
@@ -210,6 +221,8 @@ impl<'a> Parser<'a> {
             "(" => self.parse_function_call(token, left),
             "{" => self.parse_object_group(token, left),
             "^" => self.parse_order_by(token, left),
+            "@" => self.parse_focus_bind(token, left),
+            "#" => self.parse_index_bind(token, left),
             ":" => Err(ParserError::new("S0201", token.position)),
             "+" | "-" | "*" | "/" | "%" | "=" | "<" | ">" | "!=" | "<=" | ">=" | "&" | "and"
             | "or" | "in" | "~>" => self.parse_binary(token, left),
@@ -217,9 +230,7 @@ impl<'a> Parser<'a> {
             "?" => self.parse_ternary(token, left),
             "?:" => self.parse_default(token, left),
             ":=" => self.parse_assignment(token, left),
-            "@"
-            | "#"
-            | ".."
+            ".."
             | ";" => self.parse_binary(token, left),
             _ => Err(ParserError::new("S0201", token.position)),
         }
@@ -227,6 +238,33 @@ impl<'a> Parser<'a> {
 
     fn binding_power(&self, id: &str) -> u32 {
         self.operators.get(id).copied().unwrap_or(0)
+    }
+
+    fn mark_keep_array_in_value(value: &mut Value) {
+        let Some(map) = value.as_object_mut() else {
+            return;
+        };
+
+        let node_type = map.get("type").and_then(Value::as_str).unwrap_or_default();
+        let node_value = map.get("value").and_then(Value::as_str).unwrap_or_default();
+        if node_type == "binary" && node_value == "[" {
+            if let Some(lhs) = map.get_mut("lhs") {
+                Self::mark_keep_array_in_value(lhs);
+                return;
+            }
+        }
+
+        map.insert("keepArray".to_string(), Value::Bool(true));
+    }
+
+    fn mark_keep_array_target(node: &mut AstNode) {
+        if node.node_type == "binary" && node.value.as_str().is_some_and(|value| value == "[") {
+            if let Some(lhs) = node.fields.get_mut("lhs") {
+                Self::mark_keep_array_in_value(lhs);
+                return;
+            }
+        }
+        node.set_field("keepArray", Value::Bool(true));
     }
 
     fn token_data_to_json(token: &TokenData) -> Value {
@@ -421,6 +459,12 @@ impl<'a> Parser<'a> {
                 position: self.source.len(),
             },
         };
+        if token.token_type == "operator" && !is_known_operator(&token.id) {
+            return Err(
+                ParserError::new("S0204", token.position)
+                    .with_token(Value::String(token.id.clone())),
+            );
+        }
         self.current = Some(token);
         Ok(())
     }
@@ -607,7 +651,7 @@ impl<'a> Parser<'a> {
                 // keep array
                 self.advance(false)?;
                 let mut left = left;
-                left.set_field("keepArray", Value::Bool(true));
+                Self::mark_keep_array_target(&mut left);
                 return Ok(left);
             }
         }
@@ -627,6 +671,7 @@ impl<'a> Parser<'a> {
         left: AstNode,
     ) -> Result<AstNode, ParserError> {
         let mut args: Vec<AstNode> = Vec::new();
+        let mut has_partial_argument = false;
         while let Some(current) = &self.current {
             if current.id == ")" {
                 break;
@@ -642,6 +687,7 @@ impl<'a> Parser<'a> {
                 );
                 arg.set_type("operator");
                 args.push(arg);
+                has_partial_argument = true;
             } else {
                 args.push(self.expression(0)?);
             }
@@ -689,9 +735,39 @@ impl<'a> Parser<'a> {
 
         let mut node =
             AstNode::new(token.id, token.token_type, token.value, token.position);
-        node.set_type("function");
+        if has_partial_argument {
+            node.set_type("partial");
+        } else {
+            node.set_type("function");
+        }
         node.set_node("procedure", left);
         node.set_field("arguments", arguments_value);
+        Ok(node)
+    }
+
+    fn parse_focus_bind(&mut self, token: TokenData, left: AstNode) -> Result<AstNode, ParserError> {
+        let mut node =
+            AstNode::new(token.id.clone(), "operator".to_string(), Value::String(token.id), token.position);
+        node.set_type("binary");
+        node.set_node("lhs", left);
+        let rhs = self.expression(self.binding_power("@"))?;
+        if rhs.node_type != "variable" {
+            return Err(ParserError::new("S0214", rhs.position).with_token(Value::String("@".to_string())));
+        }
+        node.set_node("rhs", rhs);
+        Ok(node)
+    }
+
+    fn parse_index_bind(&mut self, token: TokenData, left: AstNode) -> Result<AstNode, ParserError> {
+        let mut node =
+            AstNode::new(token.id.clone(), "operator".to_string(), Value::String(token.id), token.position);
+        node.set_type("binary");
+        node.set_node("lhs", left);
+        let rhs = self.expression(self.binding_power("#"))?;
+        if rhs.node_type != "variable" {
+            return Err(ParserError::new("S0214", rhs.position).with_token(Value::String("#".to_string())));
+        }
+        node.set_node("rhs", rhs);
         Ok(node)
     }
 
@@ -902,4 +978,46 @@ impl<'a> Parser<'a> {
 
 fn is_lambda_name(node: &AstNode) -> bool {
     node.node_type == "name" && (node.id == "function" || node.id == "\u{03BB}")
+}
+
+fn is_known_operator(id: &str) -> bool {
+    matches!(
+        id,
+        "."
+            | "["
+            | "]"
+            | "{"
+            | "}"
+            | "("
+            | ")"
+            | ","
+            | "@"
+            | "#"
+            | ";"
+            | ":"
+            | "+"
+            | "-"
+            | "*"
+            | "**"
+            | "/"
+            | "%"
+            | "<"
+            | ">"
+            | "="
+            | "!="
+            | "<="
+            | ">="
+            | "&"
+            | "|"
+            | "^"
+            | "~>"
+            | "?"
+            | "??"
+            | "?:"
+            | ":="
+            | ".."
+            | "and"
+            | "or"
+            | "in"
+    )
 }
