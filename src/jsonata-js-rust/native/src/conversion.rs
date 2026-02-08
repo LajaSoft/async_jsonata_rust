@@ -254,7 +254,10 @@ pub fn json_value_to_jsonata_value(value: JsonValue) -> JsonataValue {
 
 pub fn serde_value_to_js<'env>(env: &'env Env, value: &SerdeValue) -> napi::Result<Unknown<'env>> {
     match value {
-        SerdeValue::Null => ().into_unknown(env),
+        SerdeValue::Null => {
+            use napi::bindgen_prelude::Null;
+            Null.into_unknown(env)
+        }
         SerdeValue::Bool(b) => b.into_unknown(env),
         SerdeValue::Number(num) => {
             if let Some(i) = num.as_i64() {

@@ -38,6 +38,27 @@
         return node;
     }
 
+    function stripInternalFields(node) {
+        if (!node || typeof node !== 'object') {
+            return node;
+        }
+
+        if (Array.isArray(node)) {
+            node.forEach(stripInternalFields);
+            return node;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(node, 'id')) {
+            delete node.id;
+        }
+
+        Object.keys(node).forEach(function (key) {
+            stripInternalFields(node[key]);
+        });
+
+        return node;
+    }
+
     function callRustParser(source, recover) {
         if (!native || typeof native.parseExpression !== 'function') {
             return null;
@@ -46,6 +67,7 @@
         const result = native.parseExpression(source, recover);
         if (result && typeof result === 'object') {
             if (result.ok === true && result.ast) {
+                stripInternalFields(result.ast);
                 reviveRegexLiterals(result.ast);
             }
             return result;

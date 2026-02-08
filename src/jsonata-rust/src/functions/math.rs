@@ -62,14 +62,15 @@ pub fn sum_jsonata(value: &JsonataValue) -> Result<JsonataValue, JsonError> {
                 }
             }
             if !found {
-                Ok(JsonataValue::Undefined)
-            } else {
-                Ok(JsonataValue::Number(total))
+                return Ok(JsonataValue::Undefined);
             }
+            let normalized = normalize_js_number(total);
+            Ok(JsonataValue::Number(normalized))
         }
         other => {
             if let Some(num) = jsonata_value_to_number(other) {
-                Ok(JsonataValue::Number(num))
+                let normalized = normalize_js_number(num);
+                Ok(JsonataValue::Number(normalized))
             } else {
                 Err(JsonError::new(
                     "D3050",

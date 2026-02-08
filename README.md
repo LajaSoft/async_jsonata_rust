@@ -27,32 +27,54 @@ Rust-native reimplementation of the JSONata query language with full compatibili
    git clone https://github.com/<org>/async_jsonata_rs.git
    cd async_jsonata_rs
    ```
-2. Install the toolchain prerequisites:
-   - Rust `stable` (via `rustup`)
-   - Node.js 18+
-   - `pnpm` (or `npm`) for managing the upstream JSONata dependencies
-3. Validate the upstream baseline (from the host or the upcoming Docker image):
-   ```bash
-   cd src/jsonata
-   pnpm install
-   pnpm test
-   ```
-   The existing output defines the expected behaviour before any Rust substitution.
-4. Use Docker Compose for a reproducible toolchain:
+2. Build the container image:
    ```bash
    docker compose build
-   docker compose run --rm dev bash -lc "cd src/jsonata && pnpm install"
-   docker compose run --rm dev bash -lc "cd src/jsonata && pnpm test"
    ```
-   The container mounts the repository under `/workspace`; all commands run against the checked-out sources.
-5. Exercise the hybrid JS/Rust build (math helpers plus `lookup`, `append`, `exists`, and `keys` currently implemented; remaining built-ins will throw `not implemented` until ported):
+3. Use Docker Compose for all commands (host toolchain is not used).  
+   The snippets below are the canonical command prefix:
    ```bash
-   docker compose run --rm dev bash -lc "cd src/jsonata-js-rust && pnpm install"
-   docker compose run --rm dev bash -lc "cd src/jsonata-js-rust && pnpm test"
+   docker compose run --rm \
+     -e DOCKER_CONFIG=/workspace/.docker \
+     --workdir /workspace/src/jsonata-js-rust \
+     dev bash -lc 'export PATH=/workspace/.cargo/bin:/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; <COMMAND>'
    ```
-   The test run builds `./native` via `napi`; expect widespread failures until the remaining built-ins are ported from Rust.
-
-As Rust components become available, `cargo test` will provide fine-grained validation of the ported modules.
+4. Install JS dependencies:
+   ```bash
+   docker compose run --rm \
+     -e DOCKER_CONFIG=/workspace/.docker \
+     --workdir /workspace/src/jsonata-js-rust \
+     dev bash -lc 'export PATH=/workspace/.cargo/bin:/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; pnpm install'
+   ```
+5. Run the full hybrid suite (includes native build):
+   ```bash
+   docker compose run --rm \
+     -e DOCKER_CONFIG=/workspace/.docker \
+     --workdir /workspace/src/jsonata-js-rust \
+     dev bash -lc 'export PATH=/workspace/.cargo/bin:/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; pnpm test'
+   ```
+6. Fast feedback commands:
+   - Native bridge compile check:
+     ```bash
+     docker compose run --rm \
+       -e DOCKER_CONFIG=/workspace/.docker \
+       --workdir /workspace/src/jsonata-js-rust/native \
+       dev cargo check
+     ```
+   - Targeted parser tests (Rust parser path):
+     ```bash
+     docker compose run --rm \
+       -e DOCKER_CONFIG=/workspace/.docker \
+       --workdir /workspace/src/jsonata-js-rust \
+       dev bash -lc './node_modules/.bin/mocha --require ./scripts/skip-user-defined-functions.js test/parser-recovery.js'
+     ```
+   - Targeted implementation tests:
+     ```bash
+     docker compose run --rm \
+       -e DOCKER_CONFIG=/workspace/.docker \
+       --workdir /workspace/src/jsonata-js-rust \
+       dev bash -lc './node_modules/.bin/mocha --require ./scripts/skip-user-defined-functions.js test/implementation-tests.js'
+     ```
 
 ## Contributing
 1. Claim a feature in `PORTING.md` marked `pending` or `partial`.

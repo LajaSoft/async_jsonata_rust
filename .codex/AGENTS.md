@@ -117,3 +117,11 @@ Rebuild the full JSONata reference implementation in Rust while preserving behav
 - When converting from JS to Rust, capture function-like values (`_jsonata_function`, `_jsonata_lambda`, plain JS functions, and generators) by creating a `ThreadsafeFunction` wrapper that marshals arguments/results and preserves the JSONata `focus` object as the invocation `this`.
 - Extend the native bridge so every Rust entrypoint receives the `focus` handle (`ctx.this`) and can pass it through to callable wrappers, keeping environment-sensitive behaviour intact.
 - Normalise callback argument preparation (mirroring `hofFuncArgs`, arity checks, generator unrolling) inside the wrapper so higher-order Rust helpers (`$map`, `$filter`, `$single`, etc.) can treat callbacks as opaque `JsonCallable`.
+
+# problems list
+
+docker compose run --rm   -e DOCKER_CONFIG=/workspace/.docker   --workdir /workspace/src/jsonata-js-rust   dev bash -lc '
+    export PATH=/workspace/.cargo/bin:/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    ./node_modules/.bin/mocha --require ./scripts/skip-user-defined-functions.js "test/**/*.js" --reporter json > /tmp/mocha.json || true
+    node -e '"'"'const r=require("/tmp/mocha.json"); console.log("failures:", r.stats.failures); (r.failures||[]).forEach((f,i)=>console.log((i+1)+". "+f.fullTitle));'"'"'
+  '

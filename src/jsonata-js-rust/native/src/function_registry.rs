@@ -128,14 +128,11 @@ fn register_append(env: &Env, exports: &mut Object) -> napi::Result<()> {
 }
 
 fn register_sum(env: &Env, exports: &mut Object) -> napi::Result<()> {
-    let func = env.create_function_from_closure::<(), sys::napi_value, _>(
-        "sum",
-        |ctx| {
-            let arg = arg_to_jsonata_value(&ctx, 0)?;
-            let result = math_impl::sum_jsonata(&arg).map_err(json_error_to_napi)?;
-            map_unknown(crate::conversion::jsonata_value_to_js(ctx.env, result))
-        },
-    )?;
+    let func = env.create_function_from_closure::<(), sys::napi_value, _>("sum", |ctx| {
+        let arg = arg_to_jsonata_value(&ctx, 0)?;
+        let result = math_impl::sum_jsonata(&arg).map_err(json_error_to_napi)?;
+        map_unknown(crate::conversion::jsonata_value_to_js(ctx.env, result))
+    })?;
     exports.set_named_property("sum", func)?;
     Ok(())
 }
@@ -239,7 +236,7 @@ type RegisterFunction = fn(&Env, &mut Object) -> napi::Result<()>;
 
 pub const MATH_FUNCTIONS: &[(&str, RegisterFunction)] = &[
     ("sum", register_sum),
-    ("max", register_max), 
+    ("max", register_max),
     ("min", register_min),
     ("average", register_average),
     ("abs", register_abs),

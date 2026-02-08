@@ -86,12 +86,18 @@ impl<'a> Tokenizer<'a> {
         self.chars[start..end].iter().collect()
     }
 
-    fn create_token(&self, kind: TokenKind, value: TokenValue, text: String, start: usize) -> Token {
+    fn create_token(
+        &self,
+        kind: TokenKind,
+        value: TokenValue,
+        text: String,
+        _start: usize,
+    ) -> Token {
         Token {
             kind,
             value,
             text,
-            position: start,
+            position: self.position,
         }
     }
 
@@ -404,7 +410,9 @@ impl<'a> Tokenizer<'a> {
         while matches!(self.current_char(), Some(c) if c.is_ascii_digit()) {
             self.advance(1);
         }
-        if self.current_char() == Some('.') {
+        if self.current_char() == Some('.')
+            && self.peek_char(1).map_or(false, |c| c.is_ascii_digit())
+        {
             self.advance(1);
             while matches!(self.current_char(), Some(c) if c.is_ascii_digit()) {
                 self.advance(1);
@@ -503,4 +511,41 @@ fn is_single_char_operator(ch: char) -> bool {
 
 fn is_name_char(ch: char) -> bool {
     !(ch.is_whitespace() || is_single_char_operator(ch) || matches!(ch, '"' | '\'' | '`'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TokenKind, TokenValue, Tokenizer};
+
+    #[test]
+    fn tokenizes_range_without_swallowing_first_dot() {
+        let mut tokenizer = Tokenizer::new("1..10000");
+
+        let first = tokenizer.next(false).expect("first token").expect("first token exists");
+        assert_eq!(first.kind, TokenKind::Number);
+        assert_eq!(first.value, TokenValue::Number(1.0));
+        assert_eq!(first.text, "1");
+
+        let second = tokenizer.next(false).expect("second token").expect("second token exists");
+        assert_eq!(second.kind, TokenKind::Operator);
+        assert_eq!(second.value, TokenValue::String("..".to_string()));
+        assert_eq!(second.text, "..");
+
+        let third = tokenizer.next(false).expect("third token").expect("third token exists");
+        assert_eq!(third.kind, TokenKind::Number);
+        assert_eq!(third.value, TokenValue::Number(10000.0));
+        assert_eq!(third.text, "10000");
+    }
+
+    #[test]
+    fn tokenizes_decimal_numbers() {
+        let mut tokenizer = Tokenizer::new("1.5");
+        let token = tokenizer
+            .next(false)
+            .expect("decimal token")
+            .expect("decimal token exists");
+        assert_eq!(token.kind, TokenKind::Number);
+        assert_eq!(token.value, TokenValue::Number(1.5));
+        assert_eq!(token.text, "1.5");
+    }
 }
