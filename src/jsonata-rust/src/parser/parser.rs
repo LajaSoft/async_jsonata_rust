@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use super::ast::AstNode;
 use super::error::ParserError;
@@ -22,8 +22,8 @@ pub struct Parser<'a> {
     tokenizer: Tokenizer<'a>,
     operators: HashMap<String, u32>,
     current: Option<TokenData>,
-    _recover: bool,
-    pub errors: Vec<ParserError>,
+    recover: bool,
+    pub errors: Vec<Value>,
 }
 
 impl<'a> Parser<'a> {
@@ -33,7 +33,7 @@ impl<'a> Parser<'a> {
             tokenizer: Tokenizer::new(source),
             operators: operator_table(),
             current: None,
-            _recover: recover,
+            recover,
             errors: Vec::new(),
         };
         parser.advance(false)?;
@@ -41,11 +41,23 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse(mut self) -> Result<Value, ParserError> {
-        let expr = self.expression(0)?;
+        let expr = if self.recover {
+            match self.expression(0) {
+                Ok(expr) => expr,
+                Err(err) => self.error_node_wrapped(err, true, false),
+            }
+        } else {
+            self.expression(0)?
+        };
         if let Some(current) = &self.current {
             if current.id != "(end)" {
-                return Err(ParserError::new("S0201", current.position)
-                    .with_token(current.value.clone()));
+                let err = ParserError::new("S0201", current.position)
+                    .with_token(current.value.clone());
+                if self.recover {
+                    self.push_error(err, true, None, false);
+                } else {
+                    return Err(err);
+                }
             }
         }
         let processed = process_ast(expr.into())?;
@@ -65,6 +77,33 @@ impl<'a> Parser<'a> {
                     .with_token(token),
             );
         }
+        let mut processed = processed;
+        if self.recover && !self.errors.is_empty() {
+            self.sync_errors_from_ast(&processed);
+            let mut delayed_s0207 = Vec::new();
+            let mut ordered = Vec::new();
+            for err in self.errors.drain(..) {
+                let should_delay = err
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .is_some_and(|code| code == "S0207")
+                    && err
+                        .get("token")
+                        .and_then(Value::as_str)
+                        .is_some_and(|token| token == "(end)")
+                    && err.get("remaining").is_none();
+                if should_delay {
+                    delayed_s0207.push(err);
+                } else {
+                    ordered.push(err);
+                }
+            }
+            ordered.extend(delayed_s0207);
+            self.errors = ordered;
+            if let Some(map) = processed.as_object_mut() {
+                map.insert("errors".to_string(), Value::Array(self.errors.clone()));
+            }
+        }
         Ok(processed)
     }
 
@@ -73,8 +112,22 @@ impl<'a> Parser<'a> {
             .current
             .clone()
             .ok_or_else(|| ParserError::new("S0201", self.source.len()))?;
+        let token_is_end = token.id == "(end)";
         self.advance(true)?;
-        let mut left = self.nud(token)?;
+        let mut left = match self.nud(token) {
+            Ok(node) => node,
+            Err(err) => {
+                if self.recover {
+                    if token_is_end {
+                        self.error_node_wrapped(err, false, false)
+                    } else {
+                        self.error_node_inline(err, true, false)
+                    }
+                } else {
+                    return Err(err);
+                }
+            }
+        };
         while let Some(current) = &self.current {
             let lbp = self.binding_power(&current.id);
             if rbp >= lbp {
@@ -82,7 +135,18 @@ impl<'a> Parser<'a> {
             }
             let token = current.clone();
             self.advance(true)?;
-            left = self.led(token, left)?;
+            left = match self.led(token, left.clone()) {
+                Ok(node) => node,
+                Err(err) => {
+                    if self.recover {
+                        let mut node = self.error_node_inline(err, false, false);
+                        node.set_node("lhs", left);
+                        node
+                    } else {
+                        return Err(err);
+                    }
+                }
+            };
         }
         Ok(left)
     }
@@ -165,13 +229,195 @@ impl<'a> Parser<'a> {
         self.operators.get(id).copied().unwrap_or(0)
     }
 
+    fn token_data_to_json(token: &TokenData) -> Value {
+        json!({
+            "type": token.token_type,
+            "value": token.value,
+            "position": token.position
+        })
+    }
+
+    fn parser_error_to_value(err: &ParserError) -> Value {
+        let mut map = Map::new();
+        map.insert("code".to_string(), Value::String(err.code.clone()));
+        map.insert("position".to_string(), json!(err.position as u64));
+        if let Some(token) = &err.token {
+            map.insert("token".to_string(), token.clone());
+        }
+        if let Some(value) = &err.value {
+            map.insert("value".to_string(), value.clone());
+        }
+        if let Some(remaining) = &err.remaining {
+            map.insert("remaining".to_string(), Value::Array(remaining.clone()));
+        }
+        Value::Object(map)
+    }
+
+    fn collect_inline_errors(node: &Value, out: &mut Vec<Value>) {
+        match node {
+            Value::Object(map) => {
+                if map
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind == "error")
+                    && map.contains_key("code")
+                {
+                    out.push(Value::Object(map.clone()));
+                }
+                for value in map.values() {
+                    Self::collect_inline_errors(value, out);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    Self::collect_inline_errors(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn sync_errors_from_ast(&mut self, ast: &Value) {
+        let mut inline_errors = Vec::new();
+        Self::collect_inline_errors(ast, &mut inline_errors);
+        for inline in inline_errors {
+            let Some(inline_obj) = inline.as_object() else {
+                continue;
+            };
+            let code = inline_obj.get("code").and_then(Value::as_str);
+            let position = inline_obj.get("position").and_then(Value::as_u64);
+            let token = inline_obj.get("token");
+
+            for existing in &mut self.errors {
+                let Some(existing_obj) = existing.as_object() else {
+                    continue;
+                };
+                let code_matches = existing_obj
+                    .get("code")
+                    .and_then(Value::as_str)
+                    == code;
+                let position_matches = existing_obj
+                    .get("position")
+                    .and_then(Value::as_u64)
+                    == position;
+                let token_matches = existing_obj.get("token") == token;
+                if code_matches && position_matches && token_matches {
+                    *existing = inline.clone();
+                    break;
+                }
+            }
+        }
+    }
+
+    fn remaining_tokens(&mut self) -> Vec<Value> {
+        let mut remaining = Vec::new();
+        if let Some(current) = &self.current {
+            if current.id != "(end)" {
+                remaining.push(Self::token_data_to_json(current));
+            }
+        }
+        while let Ok(Some(token)) = self.tokenizer.next(false) {
+            remaining.push(json!({
+                "type": match token.kind {
+                    TokenKind::Operator => "operator",
+                    TokenKind::Number => "number",
+                    TokenKind::String => "string",
+                    TokenKind::Regex => "regex",
+                    TokenKind::Name => "name",
+                    TokenKind::Variable => "variable",
+                    TokenKind::Value => "value",
+                    TokenKind::Eof => "end",
+                },
+                "value": token_value_to_json(&token.value),
+                "position": token.position
+            }));
+        }
+        remaining
+    }
+
+    fn consume_to_end(&mut self) {
+        while matches!(self.current.as_ref().map(|token| token.id.as_str()), Some(id) if id != "(end)") {
+            if self.advance(false).is_err() {
+                break;
+            }
+        }
+    }
+
+    fn push_error(
+        &mut self,
+        mut err: ParserError,
+        attach_remaining: bool,
+        error_type: Option<&str>,
+        consume_rest: bool,
+    ) -> Value {
+        if attach_remaining && err.remaining.is_none() {
+            err = err.with_remaining(self.remaining_tokens());
+        }
+        let mut value = Self::parser_error_to_value(&err);
+        if let Some(error_type) = error_type {
+            if let Some(map) = value.as_object_mut() {
+                map.insert("type".to_string(), Value::String(error_type.to_string()));
+            }
+        }
+        self.errors.push(value.clone());
+        if consume_rest {
+            self.consume_to_end();
+        }
+        value
+    }
+
+    fn error_node_inline(
+        &mut self,
+        err: ParserError,
+        attach_remaining: bool,
+        consume_rest: bool,
+    ) -> AstNode {
+        let node_position = err.position;
+        let err_value = self.push_error(err, attach_remaining, Some("error"), consume_rest);
+        let mut node = AstNode::new(
+            "(error)".to_string(),
+            "error".to_string(),
+            Value::Null,
+            node_position,
+        );
+        node.set_type("error");
+        if let Some(err_map) = err_value.as_object() {
+            for (key, value) in err_map {
+                if key == "type" {
+                    continue;
+                }
+                node.set_field(key, value.clone());
+            }
+        }
+        node
+    }
+
+    fn error_node_wrapped(
+        &mut self,
+        err: ParserError,
+        attach_remaining: bool,
+        consume_rest: bool,
+    ) -> AstNode {
+        let node_position = err.position;
+        let err_value = self.push_error(err, attach_remaining, None, consume_rest);
+        let mut node = AstNode::new(
+            "(error)".to_string(),
+            "error".to_string(),
+            Value::Null,
+            node_position,
+        );
+        node.set_type("error");
+        node.set_field("error", err_value);
+        node
+    }
+
     fn advance(&mut self, infix: bool) -> Result<(), ParserError> {
         let token = match self.next_token(infix)? {
             Some(token) => token,
             None => TokenData {
                 id: "(end)".to_string(),
                 token_type: "end".to_string(),
-                value: Value::Null,
+                value: Value::String("(end)".to_string()),
                 position: self.source.len(),
             },
         };
@@ -632,12 +878,23 @@ impl<'a> Parser<'a> {
     fn expect(&mut self, id: &str, infix: bool) -> Result<(), ParserError> {
         if let Some(current) = &self.current {
             if current.id != id {
-                return Err(ParserError::new("S0202", current.position)
-                    .with_token(current.value.clone())
-                    .with_value(Value::String(id.to_string())));
+                let code = if current.id == "(end)" { "S0203" } else { "S0202" };
+                let err = ParserError::new(code, current.position)
+                    .with_token(Value::String(current.id.clone()))
+                    .with_value(Value::String(id.to_string()));
+                if self.recover {
+                    self.push_error(err, true, None, true);
+                    return Ok(());
+                }
+                return Err(err);
             }
         } else {
-            return Err(ParserError::new("S0203", self.source.len()));
+            let err = ParserError::new("S0203", self.source.len());
+            if self.recover {
+                self.push_error(err, true, None, true);
+                return Ok(());
+            }
+            return Err(err);
         }
         self.advance(infix)
     }
@@ -646,4 +903,3 @@ impl<'a> Parser<'a> {
 fn is_lambda_name(node: &AstNode) -> bool {
     node.node_type == "name" && (node.id == "function" || node.id == "\u{03BB}")
 }
-

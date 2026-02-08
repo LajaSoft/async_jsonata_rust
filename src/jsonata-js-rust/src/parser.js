@@ -50,6 +50,15 @@
             delete node.id;
         }
 
+        if (node.type === 'error') {
+            if (node.value === null) {
+                delete node.value;
+            }
+            if (Object.prototype.hasOwnProperty.call(node, 'error')) {
+                delete node.position;
+            }
+        }
+
         Object.keys(node).forEach(function (key) {
             stripInternalFields(node[key]);
         });

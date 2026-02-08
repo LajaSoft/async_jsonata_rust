@@ -43,6 +43,7 @@ pub struct TokenizerError {
     pub token: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Tokenizer<'a> {
     chars: Vec<char>,
     length: usize,
