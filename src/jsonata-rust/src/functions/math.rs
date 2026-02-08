@@ -24,7 +24,7 @@ pub fn normalize_js_number(value: f64) -> f64 {
 pub fn sum(args: Option<&[f64]>) -> Option<f64> {
     let slice = args?;
     let total: f64 = slice.iter().copied().sum();
-    Some(normalize_js_number(total))
+    Some(total)
 }
 
 fn jsonata_value_to_number(value: &JsonataValue) -> Option<f64> {
@@ -64,13 +64,11 @@ pub fn sum_jsonata(value: &JsonataValue) -> Result<JsonataValue, JsonError> {
             if !found {
                 return Ok(JsonataValue::Undefined);
             }
-            let normalized = normalize_js_number(total);
-            Ok(JsonataValue::Number(normalized))
+            Ok(JsonataValue::Number(total))
         }
         other => {
             if let Some(num) = jsonata_value_to_number(other) {
-                let normalized = normalize_js_number(num);
-                Ok(JsonataValue::Number(normalized))
+                Ok(JsonataValue::Number(num))
             } else {
                 Err(JsonError::new(
                     "D3050",
