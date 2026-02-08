@@ -534,3 +534,59 @@ pub(crate) async fn match_function_impl(
 
     Ok(JsonValue::Array(JsonArray::new(results, true, false)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn regex_matcher(source: &str, flags: &str) -> JsonValue {
+        JsonValue::Object(JsonObject(vec![
+            (
+                "__jsonata_regex_source".to_owned(),
+                JsonValue::String(source.to_owned()),
+            ),
+            (
+                "__jsonata_regex_flags".to_owned(),
+                JsonValue::String(flags.to_owned()),
+            ),
+        ]))
+    }
+
+    #[test]
+    fn match_negative_limit_returns_d3040() {
+        let result = futures::executor::block_on(match_function_impl(
+            FunctionContext::empty(),
+            JsonValue::String("abc".to_owned()),
+            regex_matcher("a", ""),
+            JsonValue::Number(-1.0),
+        ));
+        let error = result.expect_err("negative limit must fail");
+        assert_eq!(error.code, "D3040");
+    }
+
+    #[test]
+    fn match_regex_object_returns_match_array() {
+        let result = futures::executor::block_on(match_function_impl(
+            FunctionContext::empty(),
+            JsonValue::String("aba".to_owned()),
+            regex_matcher("a", "g"),
+            JsonValue::Undefined,
+        ))
+        .expect("match should succeed");
+
+        let JsonValue::Array(array) = result else {
+            panic!("expected array");
+        };
+        assert_eq!(array.elements.len(), 2);
+
+        let JsonValue::Object(first) = &array.elements[0] else {
+            panic!("expected first entry object");
+        };
+        let index = first
+            .0
+            .iter()
+            .find_map(|(key, value)| (key == "index").then_some(value))
+            .expect("index field should exist");
+        assert!(matches!(index, JsonValue::Number(value) if *value == 0.0));
+    }
+}

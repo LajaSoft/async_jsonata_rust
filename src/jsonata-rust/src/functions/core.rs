@@ -1447,14 +1447,15 @@ mod tests {
         ));
         let shuffled = shuffle(&array).unwrap();
         if let JsonValue::Array(JsonArray { mut elements, .. }) = shuffled {
-            elements.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-            let mut expected = vec![
-                JsonValue::Number(1.0),
-                JsonValue::Number(2.0),
-                JsonValue::Number(3.0),
-            ];
-            expected.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-            assert_eq!(elements, expected);
+            let mut actual_numbers: Vec<f64> = elements
+                .drain(..)
+                .map(|value| match value {
+                    JsonValue::Number(number) => number,
+                    other => panic!("Expected shuffled number, got {:?}", other),
+                })
+                .collect();
+            actual_numbers.sort_by(|left, right| left.total_cmp(right));
+            assert_eq!(actual_numbers, vec![1.0, 2.0, 3.0]);
         } else {
             panic!("Expected shuffled array");
         }
