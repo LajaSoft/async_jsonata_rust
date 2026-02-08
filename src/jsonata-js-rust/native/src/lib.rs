@@ -7,6 +7,7 @@ use napi::threadsafe_function::{
 };
 use napi::{Env, Status, ValueType};
 use napi_derive::napi;
+use regex::RegexBuilder;
 
 mod function_registry;
 mod conversion;
@@ -310,7 +311,18 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
         ValueType::Function => {
             let js_func = JsFunction::try_from_unknown(value)?;
             
-            // Check if this is a built-in Rust function 
+            // TEMP: bridge regex literal metadata into Rust values so `$match` can be
+            // evaluated by Rust regex without JS matcher callback execution.
+            if let Ok(js_obj) = js_func.coerce_to_object() {
+                if let Some((source, flags)) = extract_regex_meta_from_function_object(&js_obj)? {
+                    return Ok(JsonValue::Object(JsonObject(vec![
+                        ("__jsonata_regex_source".to_owned(), JsonValue::String(source)),
+                        ("__jsonata_regex_flags".to_owned(), JsonValue::String(flags)),
+                    ])));
+                }
+            }
+
+            // Check if this is a built-in Rust function
             if let Ok(js_obj) = js_func.coerce_to_object() {
                 // First try _rustBuiltin marker
                 if let Ok(builtin_name_value) = js_obj.get_named_property::<JsUnknown>("_rustBuiltin") {
@@ -474,6 +486,43 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
             "Unsupported argument type for Rust implementation",
         )),
     }
+}
+
+fn extract_regex_meta_from_function_object(
+    object: &JsObject,
+) -> napi::Result<Option<(String, String)>> {
+    if object.has_named_property("__jsonata_regex")? {
+        let regex_meta: JsUnknown = object.get_named_property("__jsonata_regex")?;
+        if regex_meta.get_type()? == ValueType::Object {
+            let regex_meta_obj = regex_meta.coerce_to_object()?;
+            let source: String = regex_meta_obj
+                .get_named_property::<JsUnknown>("source")?
+                .coerce_to_string()?
+                .into_utf8()?
+                .as_str()?
+                .to_owned();
+            let flags: String = regex_meta_obj
+                .get_named_property::<JsUnknown>("flags")?
+                .coerce_to_string()?
+                .into_utf8()?
+                .as_str()?
+                .to_owned();
+            return Ok(Some((source, flags)));
+        }
+    }
+
+    // JSONata often wraps callables via {_jsonata_function, implementation}.
+    if object.has_named_property("implementation")? {
+        let implementation: JsUnknown = object.get_named_property("implementation")?;
+        if implementation.get_type()? == ValueType::Function {
+            let implementation_object = implementation.coerce_to_object()?;
+            if let Some(meta) = extract_regex_meta_from_function_object(&implementation_object)? {
+                return Ok(Some(meta));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 pub(crate) fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUnknown<'_>> {
@@ -1239,7 +1288,169 @@ fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
     })?;
     exports.set_named_property("pad", pad_fn)?;
 
+    let match_fn = env.create_function_from_closure::<(), sys::napi_value, _>("match", |ctx| {
+        let input = arg_to_json_value(&ctx, 0)?;
+        let matcher = arg_to_json_value(&ctx, 1)?;
+        let limit = arg_to_json_value(&ctx, 2)?;
+        let focus = function_context_from_this(&ctx)?;
+        ctx.env
+            .spawn_future_with_callback(
+                async move {
+                    match_function_impl(focus, input, matcher, limit)
+                        .await
+                        .map_err(json_error_to_napi)
+                },
+                |env, result| json_value_to_js(env, result),
+            )
+            .map(|promise| promise.raw())
+    })?;
+    exports.set_named_property("match", match_fn)?;
+
     Ok(())
+}
+
+fn get_object_property<'a>(object: &'a JsonObject, key: &str) -> Option<&'a JsonValue> {
+    object.0.iter().find_map(|(name, value)| {
+        if name == key {
+            return Some(value);
+        }
+        None
+    })
+}
+
+fn matcher_result_to_object(match_text: String, start: f64, groups: Vec<JsonValue>) -> JsonValue {
+    JsonValue::Object(JsonObject(vec![
+        ("match".to_owned(), JsonValue::String(match_text)),
+        ("index".to_owned(), JsonValue::Number(start)),
+        ("groups".to_owned(), JsonValue::Array(JsonArray::new(groups, false, false))),
+    ]))
+}
+
+fn regex_pattern_from_matcher(value: &JsonValue) -> Option<(String, String)> {
+    let object = match value {
+        JsonValue::Object(obj) => obj,
+        _ => return None,
+    };
+    let source = match get_object_property(object, "__jsonata_regex_source") {
+        Some(JsonValue::String(value)) => value.clone(),
+        _ => return None,
+    };
+    let flags = match get_object_property(object, "__jsonata_regex_flags") {
+        Some(JsonValue::String(value)) => value.clone(),
+        _ => String::new(),
+    };
+    Some((source, flags))
+}
+
+fn build_rust_regex(source: &str, flags: &str) -> std::result::Result<regex::Regex, JsonError> {
+    let mut builder = RegexBuilder::new(source);
+    for flag in flags.chars() {
+        match flag {
+            'i' => {
+                builder.case_insensitive(true);
+            }
+            'm' => {
+                builder.multi_line(true);
+            }
+            's' => {
+                builder.dot_matches_new_line(true);
+            }
+            'x' => {
+                builder.ignore_whitespace(true);
+            }
+            'u' | 'g' | 'y' => {}
+            _ => {}
+        }
+    }
+    builder
+        .build()
+        .map_err(|err| JsonError::new("T1010", format!("Invalid regex: {}", err)))
+}
+
+// TEMP: Rust-regex compatibility implementation for JSONata `$match`.
+// This avoids JS matcher callback routing but is still transitional until full
+// ECMAScript-regex parity is implemented natively.
+async fn match_function_impl(
+    _focus: FunctionContext,
+    input: JsonValue,
+    matcher: JsonValue,
+    limit: JsonValue,
+) -> std::result::Result<JsonValue, JsonError> {
+    if matches!(input, JsonValue::Undefined) {
+        return Ok(JsonValue::Undefined);
+    }
+
+    let input_text = match input {
+        JsonValue::String(text) => text,
+        other => {
+            return Err(JsonError::new(
+                "T0410",
+                format!("Argument 1 of function match must be string, got {:?}", other),
+            ))
+        }
+    };
+
+    let (source, flags) = match regex_pattern_from_matcher(&matcher) {
+        Some(value) => value,
+        None => {
+            return Err(JsonError::new(
+                "T0410",
+                "Argument 2 of function match must be function",
+            ))
+        }
+    };
+
+    let limit_value = match limit {
+        JsonValue::Undefined => None,
+        JsonValue::Number(num) => Some(num),
+        _ => return Err(JsonError::new("T0410", "Argument 3 of function match must be number")),
+    };
+
+    if let Some(value) = limit_value {
+        if value < 0.0 {
+            return Err(JsonError::new(
+                "D3040",
+                "Third argument of match function must evaluate to a positive number",
+            ));
+        }
+    }
+
+    let regex = build_rust_regex(&source, &flags)?;
+    let mut results: Vec<JsonValue> = Vec::new();
+    let max_matches = limit_value
+        .and_then(|value| if value.is_finite() { Some(value.max(0.0) as usize) } else { None });
+
+    if max_matches == Some(0) {
+        return Ok(JsonValue::Array(JsonArray::new(results, true, false)));
+    }
+
+    for captures in regex.captures_iter(&input_text) {
+        if let Some(max) = max_matches {
+            if results.len() >= max {
+                break;
+            }
+        }
+        let full_match = match captures.get(0) {
+            Some(value) => value,
+            None => continue,
+        };
+        let groups = captures
+            .iter()
+            .skip(1)
+            .map(|group| match group {
+                Some(value) => JsonValue::String(value.as_str().to_owned()),
+                None => JsonValue::Undefined,
+            })
+            .collect::<Vec<JsonValue>>();
+
+        results.push(matcher_result_to_object(
+            full_match.as_str().to_owned(),
+            full_match.start() as f64,
+            groups,
+        ));
+    }
+
+    Ok(JsonValue::Array(JsonArray::new(results, true, false)))
 }
 
 fn register_unimplemented(env: &Env, exports: &mut JsObject) -> napi::Result<()> {
@@ -1262,8 +1473,10 @@ pub fn load_functions(env: Env) -> napi::Result<JsUnknown<'static>> {
     
     // Используем новый registry
     function_registry::register_all_functions(&env, &mut exports)?;
-    
-    // Пока оставляем старые функции для совместимости
+
+    // Register legacy Rust-backed sets that still contain required evaluator helpers.
+    register_math(&env, &mut exports)?;
+    register_core(&env, &mut exports)?;
     register_strings(&env, &mut exports)?;
     register_unimplemented(&env, &mut exports)?;
     

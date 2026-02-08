@@ -87,6 +87,7 @@ Once these steps are underway we can confidently retire the JS front-end and run
 - **Pratt parser scaffolding**: the Rust parser (`parser.rs`) can drive most basic constructs plus function calls, rudimentary lambda detection (`function`/`λ` names with `$var` args) and block/array/object literals. Signatures are still skipped rather than parsed.
 - **Hybrid glue**: `src/jsonata-js-rust/src/parser.js` calls the Rust parser first, and rehydrates any `type: 'regex'` nodes back into real `RegExp` objects before the evaluator touches them. This fixed the `$match("test escape \\", /\\/)` OOM.
 - **Known gaps**: no `processAST` equivalent yet (paths/predicates/ancestry remain untouched), signature parsing is still TODO, and many node types are stubs (partials, chains, transforms, etc.). Evaluator still depends on JS runtime for everything beyond built-in dispatch.
+- **Temporary regex bridge**: `$match` currently uses a Rust-regex shim in the native bridge (`native/src/lib.rs`) for compatibility while full JS-semantic regex parity is incomplete. This is a transitional solution and must be revisited once complete native parity is implemented.
 
 ### Helper scripts
 

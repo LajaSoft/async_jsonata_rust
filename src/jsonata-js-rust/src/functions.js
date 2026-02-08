@@ -2,25 +2,10 @@
     'use strict';
 
     const native = require('../native/index.node');
-    const upstreamFunctions = require('../../jsonata/src/functions');
 
     const rustFunctions = native.load_functions();
 
     const identifierPattern = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-
-    function extractParameters(fn) {
-        if (typeof fn !== 'function') {
-            return [];
-        }
-        const match = /\(([^)]*)\)/.exec(fn.toString());
-        if (!match) {
-            return [];
-        }
-        return match[1]
-            .split(',')
-            .map((arg) => arg.trim())
-            .filter((arg) => arg.length > 0);
-    }
 
     function normalizeRustError(err, context) {
         if (!err || typeof err !== 'object') {
@@ -60,6 +45,18 @@
                 err.value = value;
             }
         }
+
+        // TEMP: Bridge compatibility metadata for Rust `$match` until full native regex parity lands.
+        if (err.code === 'D3040') {
+            err.index = 3;
+            if (
+                context &&
+                Array.isArray(context.args) &&
+                context.args.length > 2
+            ) {
+                err.value = context.args[2];
+            }
+        }
     }
 
     function wrapRustFunction(name, impl) {
@@ -67,13 +64,9 @@
             return impl;
         }
 
-        const upstream = upstreamFunctions[name];
-        const params = extractParameters(upstream);
+        const params = Array.from({ length: impl.length || 0 }, (_, index) => `arg${index}`);
         const argsList = params.join(', ');
         const wrapped = function (...args) {
-            if (name === 'string' && typeof upstream === 'function') {
-                return upstream.apply(this, args);
-            }
             try {
                 const result = impl.apply(this, args);
                 if (result && typeof result.then === 'function') {
@@ -103,12 +96,7 @@
         };
 
         try {
-            var inferredArity;
-            if (typeof upstream === 'function') {
-                inferredArity = upstream.length;
-            } else if (typeof impl.length === 'number') {
-                inferredArity = impl.length;
-            }
+            const inferredArity = typeof impl.length === 'number' ? impl.length : undefined;
 
             if (typeof inferredArity === 'number' && Number.isFinite(inferredArity)) {
                 Object.defineProperty(wrapped, 'arity', {
@@ -154,23 +142,5 @@
         ])
     );
 
-    const mergedFunctions = {
-        ...upstreamFunctions,
-        ...wrappedRustFunctions,
-    };
-
-    const rustSort = wrappedRustFunctions.sort;
-    const jsSort = upstreamFunctions.sort;
-
-    if (typeof rustSort === 'function' && typeof jsSort === 'function') {
-        mergedFunctions.sort = function (...args) {
-            const comparator = args[1];
-            if (typeof comparator === 'function') {
-                return Promise.resolve(jsSort.apply(this, args));
-            }
-            return Promise.resolve(rustSort.apply(this, args));
-        };
-    }
-
-    module.exports = mergedFunctions;
+    module.exports = wrappedRustFunctions;
 }());
