@@ -66,6 +66,33 @@
         return node;
     }
 
+    function reviveUndefinedLiterals(node) {
+        if (!node || typeof node !== 'object') {
+            return node;
+        }
+
+        if (Array.isArray(node)) {
+            node.forEach(reviveUndefinedLiterals);
+            return node;
+        }
+
+        if (
+            node.type === 'value' &&
+            node.value &&
+            typeof node.value === 'object' &&
+            node.value.__jsonata_undefined__ === true
+        ) {
+            node.value = undefined;
+            return node;
+        }
+
+        Object.keys(node).forEach(function (key) {
+            reviveUndefinedLiterals(node[key]);
+        });
+
+        return node;
+    }
+
     function callRustParser(source, recover) {
         if (!native || typeof native.parseExpression !== 'function') {
             throw ensureStack({
@@ -79,6 +106,7 @@
             if (result.ok === true && result.ast) {
                 stripInternalFields(result.ast);
                 reviveRegexLiterals(result.ast);
+                reviveUndefinedLiterals(result.ast);
             }
             return result;
         }

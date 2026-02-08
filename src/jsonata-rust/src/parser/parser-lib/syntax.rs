@@ -6,7 +6,8 @@ use super::super::tokenizer::TokenValue;
 
 pub(crate) fn token_value_to_json(value: &TokenValue) -> Value {
     match value {
-        TokenValue::None | TokenValue::Undefined | TokenValue::Null => Value::Null,
+        TokenValue::None | TokenValue::Null => Value::Null,
+        TokenValue::Undefined => json!({"__jsonata_undefined__": true}),
         TokenValue::Number(n) => json!(n),
         TokenValue::String(s) => Value::String(s.clone()),
         TokenValue::Regex { pattern, flags } => json!({ "pattern": pattern, "flags": flags }),
