@@ -16,7 +16,7 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
             let js_func = JsFunction::try_from_unknown(value)?;
             let mut jsonata_apply_adapter = false;
 
-            if let Ok(mut js_obj) = js_func.coerce_to_object() {
+            if let Ok(js_obj) = js_func.coerce_to_object() {
                 if js_obj.has_named_property("__jsonata_apply_adapter")? {
                     let marker: JsUnknown = js_obj.get_named_property("__jsonata_apply_adapter")?;
                     jsonata_apply_adapter = matches!(marker.get_type()?, ValueType::Boolean)
@@ -30,67 +30,6 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
                 }
                 if let Some(callable) = resolve_registered_callable(&js_obj)? {
                     return Ok(JsonValue::Function(JsonFunction::new(callable)));
-                }
-            }
-
-            if let Ok(js_obj) = js_func.coerce_to_object() {
-                if let Ok(builtin_name_value) = js_obj.get_named_property::<JsUnknown>("_rustBuiltin") {
-                    if let Ok(name_str) = builtin_name_value.coerce_to_string() {
-                        if let Ok(utf8_str) = name_str.into_utf8() {
-                            if let Ok(name) = utf8_str.as_str() {
-                                if !name.is_empty() && name != "undefined" {
-                                    if let Some(builtin) = registry::lookup_builtin(name) {
-                                        return Ok(JsonValue::Function(builtin));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if let Ok(to_string_fn) = js_obj.get_named_property::<JsFunction>("toString") {
-                    if let Ok(to_string_result) = JsFunctionExt::call(&to_string_fn, Some(&js_obj), &[]) {
-                        if let Ok(string_result) = to_string_result.coerce_to_string() {
-                            if let Ok(utf8_result) = string_result.into_utf8() {
-                                if let Ok(string_content) = utf8_result.as_str() {
-                                    if string_content.contains("[native code]") {
-                                        if let Some(start) = string_content.find("function ") {
-                                            let after_function = &string_content[start + 9..];
-                                            if let Some(end) = after_function.find('(') {
-                                                let func_name = after_function[..end].trim();
-                                                if !func_name.is_empty() {
-                                                    if let Some(builtin) = registry::lookup_builtin(func_name) {
-                                                        return Ok(JsonValue::Function(builtin));
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if let Ok(impl_value) = js_obj.get_named_property::<JsUnknown>("_rustImpl") {
-                    if impl_value.get_type()? == ValueType::Function {
-                        let impl_result = js_unknown_to_json_value(env, impl_value)?;
-                        if let JsonValue::Function(_) = impl_result {
-                            return Ok(impl_result);
-                        }
-                    }
-                }
-
-                if let Ok(name_value) = js_obj.get_named_property::<JsUnknown>("name") {
-                    if let Ok(name_str) = name_value.coerce_to_string() {
-                        if let Ok(utf8_str) = name_str.into_utf8() {
-                            if let Ok(name) = utf8_str.as_str() {
-                                if let Some(builtin) = registry::lookup_builtin(name) {
-                                    return Ok(JsonValue::Function(builtin));
-                                }
-                            }
-                        }
-                    }
                 }
             }
 
@@ -151,6 +90,19 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
                         let apply_value: JsUnknown = object.get_named_property("apply")?;
                         if matches!(apply_value.get_type()?, ValueType::Function) {
                             let mut apply_object = apply_value.coerce_to_object()?;
+                            if object.has_named_property("arity")? {
+                                let arity_value: JsUnknown = object.get_named_property("arity")?;
+                                apply_object.set_named_property("arity", arity_value)?;
+                            } else if object.has_named_property("arguments")? {
+                                let args_value: JsUnknown = object.get_named_property("arguments")?;
+                                if matches!(args_value.get_type()?, ValueType::Object) {
+                                    let args_object = args_value.coerce_to_object()?;
+                                    if args_object.is_array()? {
+                                        let arity = args_object.get_array_length()? as i32;
+                                        apply_object.set_named_property("arity", arity)?;
+                                    }
+                                }
+                            }
                             apply_object.set_named_property("__jsonata_apply_adapter", true)?;
                             return js_unknown_to_json_value(env, apply_value);
                         }
@@ -251,6 +203,40 @@ pub(crate) fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUn
         JsonValue::Function(function) => {
             let callable = function.as_callable();
             if let Some(js_callable) = callable.as_any().downcast_ref::<JsFunctionCallable>() {
+                if js_callable.uses_jsonata_apply_adapter() {
+                    let target_handle = js_callable.function_handle();
+                    let adapter = env.create_function_from_closure::<(), sys::napi_value, _>(
+                        "jsonataLambdaAdapter",
+                        move |ctx| {
+                            let target = target_handle.to_js_function(ctx.env)?;
+                            let mut args_array = ctx
+                                .env
+                                .create_array(ctx.length() as u32)?
+                                .coerce_to_object()?;
+                            for index in 0..ctx.length() {
+                                let arg: JsUnknown = ctx.get(index)?;
+                                args_array.set_element(index as u32, arg)?;
+                            }
+                            let undefined_self = undefined(ctx.env)?;
+                            let packed_args = args_array.to_unknown();
+                            let result = JsFunctionExt::call(
+                                &target,
+                                None,
+                                &[undefined_self, packed_args],
+                            )?;
+                            map_unknown(Ok(result))
+                        },
+                    )?;
+
+                    if let Some(arity) = js_callable.arity_hint() {
+                        if let Ok(mut adapter_obj) = adapter.coerce_to_object() {
+                            let _ = adapter_obj.set_named_property("arity", arity as i32);
+                        }
+                    }
+
+                    return adapter.into_unknown(env);
+                }
+
                 let js_func = js_callable.to_js_function(env)?;
                 return js_func.into_unknown(env);
             }

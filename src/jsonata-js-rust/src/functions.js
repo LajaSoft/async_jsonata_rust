@@ -51,7 +51,7 @@
         split: 3,
         spread: 1,
         sqrt: 1,
-        string: 2,
+        string: 1,
         substring: 3,
         substringAfter: 2,
         substringBefore: 2,

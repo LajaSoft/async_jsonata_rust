@@ -11,7 +11,6 @@ use futures::channel::oneshot;
 use futures::future::BoxFuture;
 
 use jsonata_rust::functions::{core as core_impl, math as math_impl, strings as strings_impl};
-use jsonata_rust::registry;
 use jsonata_rust::types::{
     CallbackHandle, FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction,
     JsonObject, JsonValue, JsonataFocus,

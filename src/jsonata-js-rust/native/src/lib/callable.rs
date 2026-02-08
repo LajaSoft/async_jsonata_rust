@@ -28,10 +28,10 @@ impl JsFunctionCallable {
         jsonata_apply_adapter: bool,
     ) -> napi::Result<Self> {
         let func_object = JsObject::from_raw(env.raw(), func.raw());
-        let arity = match func_object.get_named_property::<JsUnknown>("length") {
-            Ok(length_value) => match length_value.get_type()? {
+        let arity = if let Ok(arity_value) = func_object.get_named_property::<JsUnknown>("arity") {
+            match arity_value.get_type()? {
                 ValueType::Number => {
-                    let numeric = length_value.coerce_to_number()?.get_int32()?;
+                    let numeric = arity_value.coerce_to_number()?.get_int32()?;
                     if numeric >= 0 {
                         Some(numeric as usize)
                     } else {
@@ -39,8 +39,22 @@ impl JsFunctionCallable {
                     }
                 }
                 _ => None,
-            },
-            Err(_) => None,
+            }
+        } else {
+            match func_object.get_named_property::<JsUnknown>("length") {
+                Ok(length_value) => match length_value.get_type()? {
+                    ValueType::Number => {
+                        let numeric = length_value.coerce_to_number()?.get_int32()?;
+                        if numeric >= 0 {
+                            Some(numeric as usize)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                },
+                Err(_) => None,
+            }
         };
 
         let function_handle = Arc::new(JsFunctionHandle::new(env.raw(), &func)?);
@@ -153,6 +167,18 @@ impl JsFunctionCallable {
 
     pub(crate) fn to_js_function<'env>(&self, env: &'env Env) -> napi::Result<JsFunction<'env>> {
         self.function_handle.to_js_function(env)
+    }
+
+    pub(crate) fn function_handle(&self) -> Arc<JsFunctionHandle> {
+        Arc::clone(&self.function_handle)
+    }
+
+    pub(crate) fn arity_hint(&self) -> Option<usize> {
+        self.arity
+    }
+
+    pub(crate) fn uses_jsonata_apply_adapter(&self) -> bool {
+        self.jsonata_apply_adapter
     }
 }
 

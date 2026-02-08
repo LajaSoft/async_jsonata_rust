@@ -1,7 +1,5 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::fs::OpenOptions;
-use std::io::{stderr, Write};
 
 use rand::Rng;
 
@@ -321,7 +319,7 @@ fn build_hof_args(
     second: Option<JsonValue>,
     third: Option<JsonValue>,
 ) -> Vec<JsonValue> {
-    let arity = callable.arity().unwrap_or(3).max(1);
+    let arity = callable.arity().unwrap_or(3);
 
     let mut args = Vec::with_capacity(
         1 + second.as_ref().map(|_| 1).unwrap_or_default()
@@ -377,26 +375,6 @@ pub async fn map(
     let mut results = Vec::with_capacity(arr.elements.len());
 
     for (index, element) in arr.elements.iter().enumerate() {
-        if index == 0 {
-            eprintln!(
-                "[debug] $map: first element = {:?}, callable arity = {:?}",
-                element,
-                callable.arity()
-            );
-            let _ = stderr().flush();
-            if let Ok(mut file) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/jsonata_map_debug.log")
-            {
-                let _ = writeln!(
-                    file,
-                    "core map first element: {:?}, arity {:?}",
-                    element,
-                    callable.arity()
-                );
-            }
-        }
         let args = build_hof_args(
             &callable,
             element.clone(),
@@ -496,35 +474,14 @@ pub async fn single(
                 Some(JsonValue::Number(index as f64)),
                 Some(container.clone()),
             );
-            eprintln!(
-                "[DEBUG] $single calling function for index {}, entry: {:?}",
-                index, entry
-            );
-            let result = callable.call(ctx.clone(), args).await;
-            match result {
-                Ok(value) => {
-                    let boolean_result = boolean(&value);
-                    let is_match = matches!(boolean_result, JsonValue::Bool(true));
-                    eprintln!("[DEBUG] $single index {}: function returned {:?}, boolean: {:?}, matches: {}", 
-                             index, value, boolean_result, is_match);
-                    is_match
-                }
-                Err(err) => {
-                    eprintln!(
-                        "[DEBUG] $single index {}: function call failed: {:?}",
-                        index, err
-                    );
-                    return Err(err);
-                }
-            }
+            let value = callable.call(ctx.clone(), args).await?;
+            matches!(boolean(&value), JsonValue::Bool(true))
         } else {
             true
         };
 
         if matches {
-            eprintln!("[DEBUG] $single: found match at index {}", index);
             if found.is_some() {
-                eprintln!("[DEBUG] $single: multiple matches detected, returning D3138");
                 return Err(JsonError::new(
                     "D3138",
                     format!(
