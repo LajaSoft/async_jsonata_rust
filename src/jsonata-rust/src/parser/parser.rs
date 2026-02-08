@@ -46,6 +46,7 @@ impl<'a> Parser<'a> {
             }
         }
         let processed = process_ast(expr.into())?;
+        let processed = annotate_parent_references(processed)?;
         if processed
             .get("type")
             .and_then(Value::as_str)
@@ -69,7 +70,7 @@ impl<'a> Parser<'a> {
             .current
             .clone()
             .ok_or_else(|| ParserError::new("S0201", self.source.len()))?;
-        self.advance(false)?;
+        self.advance(true)?;
         let mut left = self.nud(token)?;
         while let Some(current) = &self.current {
             let lbp = self.binding_power(&current.id);
@@ -127,8 +128,11 @@ impl<'a> Parser<'a> {
                 Ok(node)
             }
             "|" => self.parse_transform(token),
-            _ => Err(ParserError::new("S0211", token.position)
-                .with_token(token.value.clone())),
+            _ => {
+                let code = if token.id == "(end)" { "S0207" } else { "S0211" };
+                Err(ParserError::new(code, token.position)
+                    .with_token(token.value.clone()))
+            }
         }
     }
 
@@ -690,6 +694,701 @@ fn process_ast(expr: Value) -> Result<Value, ParserError> {
     }
 
     Ok(result)
+}
+
+#[derive(Default)]
+struct ParentReferenceState {
+    next_slot_index: usize,
+    slot_label_aliases: HashMap<usize, String>,
+}
+
+fn annotate_parent_references(expr: Value) -> Result<Value, ParserError> {
+    let mut state = ParentReferenceState::default();
+    let mut annotated = annotate_parent_expr(expr, &mut state)?;
+    apply_slot_aliases(&mut annotated, &state);
+    Ok(annotated)
+}
+
+fn annotate_parent_expr(
+    expr: Value,
+    state: &mut ParentReferenceState,
+) -> Result<Value, ParserError> {
+    let mut map = match expr {
+        Value::Object(map) => map,
+        other => return Ok(other),
+    };
+
+    let expr_type = map
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    if expr_type == "parent" {
+        map.insert("slot".to_string(), new_parent_slot(state));
+        annotate_field_array(&mut map, "stages", state)?;
+        annotate_field_array(&mut map, "predicate", state)?;
+        let slots = collect_push_from_children(
+            &map,
+            &[
+                "type",
+                "value",
+                "position",
+                "keepArray",
+                "keepSingletonArray",
+                "consarray",
+                "tuple",
+                "focus",
+                "index",
+                "slot",
+                "ancestor",
+                "seekingParent",
+            ],
+        );
+        set_seeking_parent(&mut map, slots);
+        return Ok(Value::Object(map));
+    }
+
+    if expr_type == "path" {
+        return annotate_parent_path(map, state);
+    }
+
+    if expr_type == "function" || expr_type == "partial" {
+        annotate_field_array(&mut map, "arguments", state)?;
+        annotate_field_value(&mut map, "procedure", state)?;
+        let slots = collect_push_from_children(
+            &map,
+            &[
+                "procedure",
+                "type",
+                "value",
+                "position",
+                "name",
+                "keepArray",
+                "keepSingletonArray",
+                "consarray",
+                "tuple",
+                "focus",
+                "index",
+                "slot",
+                "ancestor",
+                "seekingParent",
+            ],
+        );
+        set_seeking_parent(&mut map, slots);
+        return Ok(Value::Object(map));
+    }
+
+    if expr_type == "lambda" {
+        annotate_field_value(&mut map, "body", state)?;
+        set_seeking_parent(&mut map, Vec::new());
+        return Ok(Value::Object(map));
+    }
+
+    if expr_type == "transform" {
+        annotate_field_value(&mut map, "pattern", state)?;
+        annotate_field_value(&mut map, "update", state)?;
+        annotate_field_value(&mut map, "delete", state)?;
+        set_seeking_parent(&mut map, Vec::new());
+        return Ok(Value::Object(map));
+    }
+
+    if expr_type == "apply" {
+        annotate_field_value(&mut map, "lhs", state)?;
+        annotate_field_value(&mut map, "rhs", state)?;
+        set_seeking_parent(&mut map, Vec::new());
+        return Ok(Value::Object(map));
+    }
+
+    if expr_type == "bind" {
+        annotate_field_value(&mut map, "lhs", state)?;
+        annotate_field_value(&mut map, "rhs", state)?;
+        let slots = collect_push_from_children(
+            &map,
+            &[
+                "lhs",
+                "type",
+                "value",
+                "position",
+                "keepArray",
+                "keepSingletonArray",
+                "consarray",
+                "tuple",
+                "focus",
+                "index",
+                "slot",
+                "ancestor",
+                "seekingParent",
+            ],
+        );
+        set_seeking_parent(&mut map, slots);
+        return Ok(Value::Object(map));
+    }
+
+    if expr_type == "condition" {
+        annotate_field_value(&mut map, "condition", state)?;
+        annotate_field_value(&mut map, "then", state)?;
+        annotate_field_value(&mut map, "else", state)?;
+        let slots = collect_push_from_children(
+            &map,
+            &[
+                "type",
+                "value",
+                "position",
+                "keepArray",
+                "keepSingletonArray",
+                "consarray",
+                "tuple",
+                "focus",
+                "index",
+                "slot",
+                "ancestor",
+                "seekingParent",
+            ],
+        );
+        set_seeking_parent(&mut map, slots);
+        return Ok(Value::Object(map));
+    }
+
+    if expr_type == "block" {
+        annotate_field_array(&mut map, "expressions", state)?;
+        annotate_field_array(&mut map, "stages", state)?;
+        annotate_field_array(&mut map, "predicate", state)?;
+        let slots = collect_push_from_children(
+            &map,
+            &[
+                "type",
+                "value",
+                "position",
+                "keepArray",
+                "keepSingletonArray",
+                "consarray",
+                "tuple",
+                "focus",
+                "index",
+                "slot",
+                "ancestor",
+                "seekingParent",
+            ],
+        );
+        set_seeking_parent(&mut map, slots);
+        return Ok(Value::Object(map));
+    }
+
+    if expr_type == "unary" {
+        let unary_value = map
+            .get("value")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if unary_value == "{" {
+            if let Some(lhs) = map.remove("lhs") {
+                let mut pairs = Vec::new();
+                for pair in lhs.as_array().cloned().unwrap_or_default() {
+                    let pair_items = pair
+                        .as_array()
+                        .ok_or_else(|| ParserError::new("S0206", map_position(&map)))?;
+                    if pair_items.len() != 2 {
+                        return Err(ParserError::new("S0206", map_position(&map)));
+                    }
+                    let key = annotate_parent_expr(pair_items[0].clone(), state)?;
+                    let value = annotate_parent_expr(pair_items[1].clone(), state)?;
+                    pairs.push(Value::Array(vec![key, value]));
+                }
+                map.insert("lhs".to_string(), Value::Array(pairs));
+            }
+            annotate_field_array(&mut map, "stages", state)?;
+            annotate_field_array(&mut map, "predicate", state)?;
+            let slots = collect_push_from_children(
+                &map,
+                &[
+                    "type",
+                    "value",
+                    "position",
+                    "keepArray",
+                    "keepSingletonArray",
+                    "consarray",
+                    "tuple",
+                    "focus",
+                    "index",
+                    "slot",
+                    "ancestor",
+                    "seekingParent",
+                ],
+            );
+            set_seeking_parent(&mut map, slots);
+            return Ok(Value::Object(map));
+        }
+        annotate_field_value(&mut map, "expression", state)?;
+        annotate_field_array(&mut map, "expressions", state)?;
+        annotate_field_array(&mut map, "stages", state)?;
+        annotate_field_array(&mut map, "predicate", state)?;
+        let slots = collect_push_from_children(
+            &map,
+            &[
+                "type",
+                "value",
+                "position",
+                "keepArray",
+                "keepSingletonArray",
+                "consarray",
+                "tuple",
+                "focus",
+                "index",
+                "slot",
+                "ancestor",
+                "seekingParent",
+            ],
+        );
+        set_seeking_parent(&mut map, slots);
+        return Ok(Value::Object(map));
+    }
+
+    if expr_type == "binary" {
+        annotate_field_value(&mut map, "lhs", state)?;
+        annotate_field_value(&mut map, "rhs", state)?;
+        annotate_field_array(&mut map, "stages", state)?;
+        annotate_field_array(&mut map, "predicate", state)?;
+        let slots = collect_push_from_children(
+            &map,
+            &[
+                "type",
+                "value",
+                "position",
+                "keepArray",
+                "keepSingletonArray",
+                "consarray",
+                "tuple",
+                "focus",
+                "index",
+                "slot",
+                "ancestor",
+                "seekingParent",
+            ],
+        );
+        set_seeking_parent(&mut map, slots);
+        return Ok(Value::Object(map));
+    }
+
+    if expr_type == "sort" {
+        annotate_field_array(&mut map, "terms", state)?;
+        annotate_field_array(&mut map, "stages", state)?;
+        annotate_field_array(&mut map, "predicate", state)?;
+        let slots = collect_push_from_children(
+            &map,
+            &[
+                "type",
+                "value",
+                "position",
+                "keepArray",
+                "keepSingletonArray",
+                "consarray",
+                "tuple",
+                "focus",
+                "index",
+                "slot",
+                "ancestor",
+                "seekingParent",
+            ],
+        );
+        set_seeking_parent(&mut map, slots);
+        return Ok(Value::Object(map));
+    }
+
+    annotate_field_value(&mut map, "expression", state)?;
+    annotate_field_value(&mut map, "lhs", state)?;
+    annotate_field_value(&mut map, "rhs", state)?;
+    annotate_field_value(&mut map, "condition", state)?;
+    annotate_field_value(&mut map, "then", state)?;
+    annotate_field_value(&mut map, "else", state)?;
+    annotate_field_value(&mut map, "procedure", state)?;
+    annotate_field_value(&mut map, "body", state)?;
+    annotate_field_value(&mut map, "pattern", state)?;
+    annotate_field_value(&mut map, "update", state)?;
+    annotate_field_value(&mut map, "delete", state)?;
+    annotate_field_array(&mut map, "arguments", state)?;
+    annotate_field_array(&mut map, "expressions", state)?;
+    annotate_field_array(&mut map, "terms", state)?;
+    annotate_field_array(&mut map, "steps", state)?;
+    annotate_field_array(&mut map, "stages", state)?;
+    annotate_field_array(&mut map, "predicate", state)?;
+    annotate_field_value(&mut map, "group", state)?;
+    annotate_field_value(&mut map, "expr", state)?;
+    let slots = collect_push_from_children(
+        &map,
+        &[
+            "type",
+            "value",
+            "position",
+            "keepArray",
+            "keepSingletonArray",
+            "consarray",
+            "tuple",
+            "focus",
+            "index",
+            "slot",
+            "ancestor",
+            "seekingParent",
+            "name",
+            "descending",
+        ],
+    );
+    set_seeking_parent(&mut map, slots);
+    Ok(Value::Object(map))
+}
+
+fn annotate_parent_path(
+    mut map: serde_json::Map<String, Value>,
+    state: &mut ParentReferenceState,
+) -> Result<Value, ParserError> {
+    let position = map_position(&map);
+    let mut steps = Vec::new();
+    for step in map
+        .remove("steps")
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+    {
+        steps.push(annotate_parent_expr(step, state)?);
+    }
+
+    let mut unresolved_slots = Vec::new();
+    for step_index in 0..steps.len() {
+        adjust_stage_slots(&mut steps[step_index], state)?;
+        let step_slots = collect_push_slots(&steps[step_index]);
+        for mut slot in step_slots {
+            let mut search_index = step_index as isize - 1;
+            while slot_level(&slot) > 0 {
+                if search_index < 0 {
+                    unresolved_slots.push(slot.clone());
+                    break;
+                }
+                let mut candidate = search_index;
+                while candidate > 0 {
+                    let current_focus = has_focus(&steps[candidate as usize]);
+                    let previous_focus = has_focus(&steps[(candidate - 1) as usize]);
+                    if !(current_focus && previous_focus) {
+                        break;
+                    }
+                    candidate -= 1;
+                }
+                let candidate_index = candidate as usize;
+                let candidate_step = steps
+                    .get_mut(candidate_index)
+                    .ok_or_else(|| ParserError::new("S0206", position))?;
+                seek_parent(candidate_step, &mut slot, state)?;
+                search_index = candidate - 1;
+            }
+        }
+    }
+
+    map.insert("steps".to_string(), Value::Array(steps));
+    set_seeking_parent(&mut map, unresolved_slots);
+    Ok(Value::Object(map))
+}
+
+fn annotate_field_value(
+    map: &mut serde_json::Map<String, Value>,
+    key: &str,
+    state: &mut ParentReferenceState,
+) -> Result<(), ParserError> {
+    let Some(value) = map.remove(key) else {
+        return Ok(());
+    };
+    let analyzed = annotate_parent_expr(value, state)?;
+    map.insert(key.to_string(), analyzed);
+    Ok(())
+}
+
+fn annotate_field_array(
+    map: &mut serde_json::Map<String, Value>,
+    key: &str,
+    state: &mut ParentReferenceState,
+) -> Result<(), ParserError> {
+    let Some(value) = map.remove(key) else {
+        return Ok(());
+    };
+    if let Some(items) = value.as_array() {
+        let mut analyzed = Vec::with_capacity(items.len());
+        for item in items {
+            analyzed.push(annotate_parent_expr(item.clone(), state)?);
+        }
+        map.insert(key.to_string(), Value::Array(analyzed));
+        return Ok(());
+    }
+    let analyzed = annotate_parent_expr(value, state)?;
+    map.insert(key.to_string(), analyzed);
+    Ok(())
+}
+
+fn collect_push_slots(value: &Value) -> Vec<Value> {
+    match value {
+        Value::Array(items) => {
+            let mut slots = Vec::new();
+            for item in items {
+                append_slots(&mut slots, collect_push_slots(item));
+            }
+            slots
+        }
+        Value::Object(map) => {
+            let mut slots = Vec::new();
+            if let Some(seeking_parent) = map.get("seekingParent").and_then(Value::as_array) {
+                slots.extend(seeking_parent.clone());
+            }
+            if map
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|expr_type| expr_type == "parent")
+            {
+                if let Some(slot) = map.get("slot").cloned() {
+                    slots.push(slot);
+                }
+            }
+            slots
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn collect_push_from_children(
+    map: &serde_json::Map<String, Value>,
+    skip_keys: &[&str],
+) -> Vec<Value> {
+    let mut slots = Vec::new();
+    for (key, value) in map {
+        if skip_keys.iter().any(|skip| skip == key) {
+            continue;
+        }
+        append_slots(&mut slots, collect_push_slots(value));
+    }
+    slots
+}
+
+fn append_slots(target: &mut Vec<Value>, mut slots: Vec<Value>) {
+    target.append(&mut slots);
+}
+
+fn set_seeking_parent(map: &mut serde_json::Map<String, Value>, slots: Vec<Value>) {
+    if slots.is_empty() {
+        map.remove("seekingParent");
+        return;
+    }
+    map.insert("seekingParent".to_string(), Value::Array(slots));
+}
+
+fn new_parent_slot(state: &mut ParentReferenceState) -> Value {
+    let index = state.next_slot_index;
+    state.next_slot_index += 1;
+    json!({
+        "label": format!("!{index}"),
+        "level": 1,
+        "index": index as u64,
+    })
+}
+
+fn adjust_stage_slots(
+    step: &mut Value,
+    state: &mut ParentReferenceState,
+) -> Result<(), ParserError> {
+    let has_stage_fields = step
+        .as_object()
+        .is_some_and(|map| map.contains_key("stages") || map.contains_key("predicate"));
+    if !has_stage_fields {
+        return Ok(());
+    }
+
+    let mut slots = {
+        let Some(step_map) = step.as_object_mut() else {
+            return Ok(());
+        };
+        step_map
+            .remove("seekingParent")
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default()
+    };
+    if slots.is_empty() {
+        return Ok(());
+    }
+
+    let mut transformed = Vec::with_capacity(slots.len());
+    for mut slot in slots.drain(..) {
+        if slot_level(&slot) == 1 {
+            seek_parent(step, &mut slot, state)?;
+        } else {
+            let level = slot_level(&slot) - 1;
+            set_slot_level(&mut slot, level);
+        }
+        transformed.push(slot);
+    }
+
+    let Some(step_map) = step.as_object_mut() else {
+        return Ok(());
+    };
+    set_seeking_parent(step_map, transformed);
+    Ok(())
+}
+
+fn seek_parent(
+    node: &mut Value,
+    slot: &mut Value,
+    state: &mut ParentReferenceState,
+) -> Result<(), ParserError> {
+    let node_position = expr_position(node);
+    let node_type = node
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    if node_type == "name" || node_type == "wildcard" {
+        let level = slot_level(slot) - 1;
+        set_slot_level(slot, level);
+        if level == 0 {
+            let node_map = node
+                .as_object_mut()
+                .ok_or_else(|| ParserError::new("S0206", node_position))?;
+            if let Some(existing_label) = node_map
+                .get("ancestor")
+                .and_then(|ancestor| ancestor.get("label"))
+                .and_then(Value::as_str)
+            {
+                if let Some(slot_index) = slot_index(slot) {
+                    state
+                        .slot_label_aliases
+                        .insert(slot_index, existing_label.to_string());
+                }
+                set_slot_label(slot, existing_label);
+            }
+            node_map.insert("ancestor".to_string(), slot.clone());
+            node_map.insert("tuple".to_string(), Value::Bool(true));
+        }
+        return Ok(());
+    }
+
+    if node_type == "parent" {
+        let level = slot_level(slot) + 1;
+        set_slot_level(slot, level);
+        return Ok(());
+    }
+
+    if node_type == "block" {
+        let node_map = node
+            .as_object_mut()
+            .ok_or_else(|| ParserError::new("S0206", node_position))?;
+        node_map.insert("tuple".to_string(), Value::Bool(true));
+        if let Some(expressions) = node_map
+            .get_mut("expressions")
+            .and_then(Value::as_array_mut)
+        {
+            if let Some(last_expression) = expressions.last_mut() {
+                seek_parent(last_expression, slot, state)?;
+            }
+        }
+        return Ok(());
+    }
+
+    if node_type == "path" {
+        let node_map = node
+            .as_object_mut()
+            .ok_or_else(|| ParserError::new("S0206", node_position))?;
+        node_map.insert("tuple".to_string(), Value::Bool(true));
+        let steps = node_map
+            .get_mut("steps")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| ParserError::new("S0206", node_position))?;
+        if steps.is_empty() {
+            return Err(ParserError::new("S0217", node_position)
+                .with_token(Value::String(node_type)));
+        }
+        let mut step_index = steps.len() as isize - 1;
+        if let Some(last_step) = steps.get_mut(step_index as usize) {
+            seek_parent(last_step, slot, state)?;
+        }
+        while slot_level(slot) > 0 && step_index > 0 {
+            step_index -= 1;
+            if let Some(step) = steps.get_mut(step_index as usize) {
+                seek_parent(step, slot, state)?;
+            }
+        }
+        return Ok(());
+    }
+
+    Err(
+        ParserError::new("S0217", node_position)
+            .with_token(Value::String(node_type)),
+    )
+}
+
+fn has_focus(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|map| map.contains_key("focus"))
+}
+
+fn slot_index(slot: &Value) -> Option<usize> {
+    slot.get("index")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+}
+
+fn slot_level(slot: &Value) -> i64 {
+    slot.get("level")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+}
+
+fn set_slot_level(slot: &mut Value, level: i64) {
+    if let Some(slot_map) = slot.as_object_mut() {
+        slot_map.insert("level".to_string(), json!(level));
+    }
+}
+
+fn set_slot_label(slot: &mut Value, label: &str) {
+    if let Some(slot_map) = slot.as_object_mut() {
+        slot_map.insert("label".to_string(), Value::String(label.to_string()));
+    }
+}
+
+fn apply_slot_aliases(node: &mut Value, state: &ParentReferenceState) {
+    match node {
+        Value::Array(items) => {
+            for item in items {
+                apply_slot_aliases(item, state);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(slot) = map.get_mut("slot") {
+                apply_slot_alias(slot, state);
+            }
+            if let Some(ancestor) = map.get_mut("ancestor") {
+                apply_slot_alias(ancestor, state);
+            }
+            if let Some(seeking_parent) = map
+                .get_mut("seekingParent")
+                .and_then(Value::as_array_mut)
+            {
+                for slot in seeking_parent {
+                    apply_slot_alias(slot, state);
+                }
+            }
+            for (key, value) in map.iter_mut() {
+                if key == "slot" || key == "ancestor" || key == "seekingParent" {
+                    continue;
+                }
+                apply_slot_aliases(value, state);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn apply_slot_alias(slot: &mut Value, state: &ParentReferenceState) {
+    let Some(index) = slot_index(slot) else {
+        return;
+    };
+    let Some(label) = state.slot_label_aliases.get(&index) else {
+        return;
+    };
+    set_slot_label(slot, label);
 }
 
 fn process_ast_object(mut map: serde_json::Map<String, Value>) -> Result<Value, ParserError> {

@@ -1,5 +1,10 @@
 # async_jsonata_rs :: Agent Playbook
 
+
+### FALLBACKS
+
+NO NEW FALLBACKS ALLOWED WITHOUT EXPLICIT REQUEST FROM USER.
+
 ## Mission
 Rebuild the full JSONata reference implementation in Rust while preserving behavioural parity with the upstream JavaScript project. Use the official JSONata conformance suite as the oracle, replacing the JS internals from the bottom up with native Rust components until the entire stack is Rust-driven.
 
