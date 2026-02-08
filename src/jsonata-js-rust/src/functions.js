@@ -26,6 +26,8 @@
         filter: 2,
         floor: 1,
         foldLeft: 3,
+        formatBase: 2,
+        formatNumber: 3,
         join: 2,
         keys: 1,
         length: 1,

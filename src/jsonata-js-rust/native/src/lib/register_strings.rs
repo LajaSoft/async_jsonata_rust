@@ -176,6 +176,29 @@ pub(crate) fn register_strings(env: &Env, exports: &mut JsObject) -> napi::Resul
     })?;
     exports.set_named_property("pad", pad_fn)?;
 
+    let format_number_fn =
+        env.create_function_from_closure::<(), sys::napi_value, _>("formatNumber", |ctx| {
+            let value = arg_to_json_value(&ctx, 0)?;
+            let picture = arg_to_json_value(&ctx, 1)?;
+            let options = arg_to_json_value(&ctx, 2)?;
+            match strings_impl::format_number(&value, &picture, &options) {
+                Ok(result) => map_unknown(json_value_to_js(ctx.env, result)),
+                Err(err) => Err(json_error_to_napi(err)),
+            }
+        })?;
+    exports.set_named_property("formatNumber", format_number_fn)?;
+
+    let format_base_fn =
+        env.create_function_from_closure::<(), sys::napi_value, _>("formatBase", |ctx| {
+            let value = arg_to_json_value(&ctx, 0)?;
+            let radix = arg_to_json_value(&ctx, 1)?;
+            match strings_impl::format_base(&value, &radix) {
+                Ok(result) => map_unknown(json_value_to_js(ctx.env, result)),
+                Err(err) => Err(json_error_to_napi(err)),
+            }
+        })?;
+    exports.set_named_property("formatBase", format_base_fn)?;
+
     let match_fn = env.create_function_from_closure::<(), sys::napi_value, _>("match", |ctx| {
         let input = arg_to_json_value(&ctx, 0)?;
         let matcher = arg_to_json_value(&ctx, 1)?;

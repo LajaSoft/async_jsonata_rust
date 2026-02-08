@@ -743,6 +743,662 @@ pub fn pad(
     Ok(JsonValue::String(result))
 }
 
+#[derive(Clone)]
+struct NumberFormatProperties {
+    decimal_separator: String,
+    grouping_separator: String,
+    exponent_separator: String,
+    minus_sign: String,
+    percent: String,
+    per_mille: String,
+    zero_digit: String,
+    digit: String,
+    pattern_separator: String,
+}
+
+#[derive(Clone)]
+struct NumberFormatParts {
+    prefix: String,
+    suffix: String,
+    active_part: String,
+    mantissa_part: String,
+    exponent_part: Option<String>,
+    integer_part: String,
+    fractional_part: String,
+    subpicture: String,
+}
+
+#[derive(Clone)]
+struct NumberFormatPicture {
+    integer_part_grouping_positions: Vec<usize>,
+    regular_grouping: usize,
+    minimum_integer_part_size: usize,
+    scaling_factor: usize,
+    fractional_part_grouping_positions: Vec<usize>,
+    minimum_fractional_part_size: usize,
+    maximum_fractional_part_size: usize,
+    minimum_exponent_size: usize,
+    prefix: String,
+    suffix: String,
+    picture: String,
+}
+
+fn repeat_token(token: &str, count: usize) -> String {
+    if count == 0 {
+        return String::new();
+    }
+    token.repeat(count)
+}
+
+fn first_char_or(input: &str, fallback: char) -> char {
+    input.chars().next().unwrap_or(fallback)
+}
+
+fn count_occurrences(input: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    input.match_indices(needle).count()
+}
+
+fn count_decimal_digits(input: &str, decimal_digit_family: &[char]) -> usize {
+    input.chars()
+        .filter(|ch| decimal_digit_family.contains(ch))
+        .count()
+}
+
+fn count_decimal_or_optional_digits(
+    input: &str,
+    decimal_digit_family: &[char],
+    digit_placeholder: char,
+) -> usize {
+    input.chars()
+        .filter(|ch| decimal_digit_family.contains(ch) || *ch == digit_placeholder)
+        .count()
+}
+
+fn split_parts(
+    subpicture: &str,
+    props: &NumberFormatProperties,
+    active_chars: &[char],
+) -> NumberFormatParts {
+    let exponent_separator = first_char_or(&props.exponent_separator, 'e');
+    let mut prefix = String::new();
+    let mut hit_active = false;
+    for ch in subpicture.chars() {
+        if active_chars.contains(&ch) && ch != exponent_separator {
+            hit_active = true;
+            break;
+        }
+        prefix.push(ch);
+    }
+    if !hit_active {
+        prefix.clear();
+    }
+
+    let mut suffix_reversed = String::new();
+    let mut hit_active_from_right = false;
+    for ch in subpicture.chars().rev() {
+        if active_chars.contains(&ch) && ch != exponent_separator {
+            hit_active_from_right = true;
+            break;
+        }
+        suffix_reversed.push(ch);
+    }
+    let suffix: String = if hit_active_from_right {
+        suffix_reversed.chars().rev().collect()
+    } else {
+        String::new()
+    };
+
+    let active_part = subpicture
+        .strip_prefix(&prefix)
+        .unwrap_or(subpicture)
+        .strip_suffix(&suffix)
+        .unwrap_or(subpicture)
+        .to_owned();
+
+    let exponent_position = subpicture
+        .char_indices()
+        .find(|(idx, ch)| *idx >= prefix.len() && *ch == exponent_separator)
+        .map(|(idx, _)| idx)
+        .filter(|idx| *idx <= subpicture.len().saturating_sub(suffix.len()));
+
+    let (mantissa_part, exponent_part) = if let Some(position) = exponent_position {
+        let left = active_part[..position - prefix.len()].to_owned();
+        let right = active_part[position - prefix.len() + props.exponent_separator.len()..].to_owned();
+        (left, Some(right))
+    } else {
+        (active_part.clone(), None)
+    };
+
+    let decimal_separator = first_char_or(&props.decimal_separator, '.');
+    let decimal_position = mantissa_part.find(decimal_separator);
+    let (integer_part, fractional_part) = if let Some(position) = decimal_position {
+        (
+            mantissa_part[..position].to_owned(),
+            mantissa_part[position + props.decimal_separator.len()..].to_owned(),
+        )
+    } else {
+        (mantissa_part.clone(), String::new())
+    };
+
+    NumberFormatParts {
+        prefix,
+        suffix,
+        active_part,
+        mantissa_part,
+        exponent_part,
+        integer_part,
+        fractional_part,
+        subpicture: subpicture.to_owned(),
+    }
+}
+
+fn validate_picture(
+    parts: &NumberFormatParts,
+    props: &NumberFormatProperties,
+    decimal_digit_family: &[char],
+    active_chars: &[char],
+) -> Result<(), JsonError> {
+    let decimal_separator = first_char_or(&props.decimal_separator, '.');
+    let grouping_separator = first_char_or(&props.grouping_separator, ',');
+    let digit_placeholder = first_char_or(&props.digit, '#');
+
+    let mut error_code: Option<&'static str> = None;
+    let decimal_pos = parts.subpicture.find(decimal_separator);
+    if decimal_pos != parts.subpicture.rfind(decimal_separator) {
+        error_code = Some("D3081");
+    }
+    if count_occurrences(&parts.subpicture, &props.percent) > 1 {
+        error_code = Some("D3082");
+    }
+    if count_occurrences(&parts.subpicture, &props.per_mille) > 1 {
+        error_code = Some("D3083");
+    }
+    if parts.subpicture.contains(&props.percent) && parts.subpicture.contains(&props.per_mille) {
+        error_code = Some("D3084");
+    }
+
+    let has_active_digit = parts
+        .mantissa_part
+        .chars()
+        .any(|ch| decimal_digit_family.contains(&ch) || ch == digit_placeholder);
+    if !has_active_digit {
+        error_code = Some("D3085");
+    }
+
+    let has_passive_char = parts.active_part.chars().any(|ch| !active_chars.contains(&ch));
+    if has_passive_char {
+        error_code = Some("D3086");
+    }
+
+    if let Some(decimal_position) = decimal_pos {
+        let chars: Vec<char> = parts.subpicture.chars().collect();
+        let decimal_char_index = parts.subpicture[..decimal_position].chars().count();
+        let before = if decimal_char_index > 0 {
+            Some(chars[decimal_char_index - 1])
+        } else {
+            None
+        };
+        let after = chars.get(decimal_char_index + 1).copied();
+        if before == Some(grouping_separator) || after == Some(grouping_separator) {
+            error_code = Some("D3087");
+        }
+    } else if parts.integer_part.ends_with(grouping_separator) {
+        error_code = Some("D3088");
+    }
+
+    if parts.subpicture.contains(&(props.grouping_separator.clone() + &props.grouping_separator)) {
+        error_code = Some("D3089");
+    }
+
+    if let Some(optional_digit_pos) = parts.integer_part.find(digit_placeholder) {
+        let has_decimal_before_optional = parts.integer_part[..optional_digit_pos]
+            .chars()
+            .any(|ch| decimal_digit_family.contains(&ch));
+        if has_decimal_before_optional {
+            error_code = Some("D3090");
+        }
+    }
+
+    if let Some(optional_digit_pos) = parts.fractional_part.rfind(digit_placeholder) {
+        let has_decimal_after_optional = parts.fractional_part[optional_digit_pos..]
+            .chars()
+            .any(|ch| decimal_digit_family.contains(&ch));
+        if has_decimal_after_optional {
+            error_code = Some("D3091");
+        }
+    }
+
+    if let Some(exponent_part) = &parts.exponent_part {
+        if !exponent_part.is_empty()
+            && (parts.subpicture.contains(&props.percent) || parts.subpicture.contains(&props.per_mille))
+        {
+            error_code = Some("D3092");
+        }
+        if exponent_part.is_empty()
+            || exponent_part
+                .chars()
+                .any(|ch| !decimal_digit_family.contains(&ch))
+        {
+            error_code = Some("D3093");
+        }
+    }
+
+    if let Some(code) = error_code {
+        return Err(JsonError::new(code, "Invalid picture string"));
+    }
+    Ok(())
+}
+
+fn analyse_picture(
+    parts: &NumberFormatParts,
+    props: &NumberFormatProperties,
+    decimal_digit_family: &[char],
+) -> NumberFormatPicture {
+    let grouping_separator = first_char_or(&props.grouping_separator, ',');
+    let digit_placeholder = first_char_or(&props.digit, '#');
+
+    let get_grouping_positions = |part: &str, to_left: bool| -> Vec<usize> {
+        let mut positions: Vec<usize> = Vec::new();
+        let mut search_start = 0usize;
+        while let Some(offset) = part[search_start..].find(grouping_separator) {
+            let grouping_position = search_start + offset;
+            let sample = if to_left {
+                &part[..grouping_position]
+            } else {
+                &part[grouping_position..]
+            };
+            let chars_to_the_right = sample
+                .chars()
+                .filter(|ch| decimal_digit_family.contains(ch) || *ch == digit_placeholder)
+                .count();
+            positions.push(chars_to_the_right);
+            search_start = grouping_position + grouping_separator.len_utf8();
+        }
+        positions
+    };
+
+    let integer_part_grouping_positions = get_grouping_positions(&parts.integer_part, false);
+    let regular_grouping = if integer_part_grouping_positions.is_empty() {
+        0
+    } else {
+        let gcd = |mut a: usize, mut b: usize| -> usize {
+            while b != 0 {
+                let t = b;
+                b = a % b;
+                a = t;
+            }
+            a
+        };
+        let factor = integer_part_grouping_positions
+            .iter()
+            .copied()
+            .reduce(gcd)
+            .unwrap_or(0);
+        let mut index = 1usize;
+        let mut regular = true;
+        while index <= integer_part_grouping_positions.len() {
+            if !integer_part_grouping_positions.contains(&(index * factor)) {
+                regular = false;
+                break;
+            }
+            index += 1;
+        }
+        if regular {
+            factor
+        } else {
+            0
+        }
+    };
+
+    let fractional_part_grouping_positions = get_grouping_positions(&parts.fractional_part, true);
+    let mut minimum_integer_part_size = count_decimal_digits(&parts.integer_part, decimal_digit_family);
+    let scaling_factor = minimum_integer_part_size;
+    let mut minimum_fractional_part_size =
+        count_decimal_digits(&parts.fractional_part, decimal_digit_family);
+    let mut maximum_fractional_part_size = count_decimal_or_optional_digits(
+        &parts.fractional_part,
+        decimal_digit_family,
+        digit_placeholder,
+    );
+    let exponent_present = parts.exponent_part.is_some();
+
+    if minimum_integer_part_size == 0 && maximum_fractional_part_size == 0 {
+        if exponent_present {
+            minimum_fractional_part_size = 1;
+            maximum_fractional_part_size = 1;
+        } else {
+            minimum_integer_part_size = 1;
+        }
+    }
+
+    if exponent_present
+        && minimum_integer_part_size == 0
+        && parts.integer_part.contains(digit_placeholder)
+    {
+        minimum_integer_part_size = 1;
+    }
+
+    if minimum_integer_part_size == 0 && minimum_fractional_part_size == 0 {
+        minimum_fractional_part_size = 1;
+    }
+
+    let minimum_exponent_size = if let Some(exponent_part) = &parts.exponent_part {
+        count_decimal_digits(exponent_part, decimal_digit_family)
+    } else {
+        0
+    };
+
+    NumberFormatPicture {
+        integer_part_grouping_positions,
+        regular_grouping,
+        minimum_integer_part_size,
+        scaling_factor,
+        fractional_part_grouping_positions,
+        minimum_fractional_part_size,
+        maximum_fractional_part_size,
+        minimum_exponent_size,
+        prefix: parts.prefix.clone(),
+        suffix: parts.suffix.clone(),
+        picture: parts.subpicture.clone(),
+    }
+}
+
+fn insert_char_at(input: &str, char_index: usize, ch: char) -> String {
+    let mut chars: Vec<char> = input.chars().collect();
+    chars.insert(char_index, ch);
+    chars.into_iter().collect()
+}
+
+fn to_fixed_abs(value: f64, dp: usize) -> String {
+    format!("{:.*}", dp, value.abs())
+}
+
+fn to_radix_string(mut value: i128, radix: u32) -> String {
+    if value == 0 {
+        return "0".to_owned();
+    }
+
+    let negative = value < 0;
+    if negative {
+        value = -value;
+    }
+
+    let mut digits: Vec<char> = Vec::new();
+    while value > 0 {
+        let digit = (value % radix as i128) as u32;
+        let ch = if digit < 10 {
+            char::from_u32('0' as u32 + digit).unwrap_or('0')
+        } else {
+            char::from_u32('a' as u32 + (digit - 10)).unwrap_or('a')
+        };
+        digits.push(ch);
+        value /= radix as i128;
+    }
+
+    digits.reverse();
+    let mut out: String = digits.into_iter().collect();
+    if negative {
+        out.insert(0, '-');
+    }
+    out
+}
+
+pub fn format_base(value: &JsonValue, radix: &JsonValue) -> Result<JsonValue, JsonError> {
+    let Some(raw_value) = to_number(value) else {
+        return Ok(JsonValue::Undefined);
+    };
+
+    let rounded_value = crate::functions::math::round(Some(raw_value), None).unwrap_or(raw_value);
+    let rounded_radix = match to_number(radix) {
+        Some(base) => crate::functions::math::round(Some(base), None).unwrap_or(base),
+        None => 10.0,
+    };
+
+    if !(2.0..=36.0).contains(&rounded_radix) {
+        return Err(JsonError::new(
+            "D3100",
+            format!("Radix {} is out of range", rounded_radix),
+        ));
+    }
+
+    let result = to_radix_string(rounded_value as i128, rounded_radix as u32);
+    Ok(JsonValue::String(result))
+}
+
+pub fn format_number(
+    value: &JsonValue,
+    picture: &JsonValue,
+    options: &JsonValue,
+) -> Result<JsonValue, JsonError> {
+    let Some(raw_value) = to_number(value) else {
+        return Ok(JsonValue::Undefined);
+    };
+
+    let Some(picture_string) = ensure_string(picture, false)? else {
+        return Ok(JsonValue::Undefined);
+    };
+
+    let mut props = NumberFormatProperties {
+        decimal_separator: ".".to_owned(),
+        grouping_separator: ",".to_owned(),
+        exponent_separator: "e".to_owned(),
+        minus_sign: "-".to_owned(),
+        percent: "%".to_owned(),
+        per_mille: "\u{2030}".to_owned(),
+        zero_digit: "0".to_owned(),
+        digit: "#".to_owned(),
+        pattern_separator: ";".to_owned(),
+    };
+
+    if let JsonValue::Object(JsonObject(entries)) = options {
+        for (key, entry_value) in entries {
+            if let JsonValue::String(text) = entry_value {
+                match key.as_str() {
+                    "decimal-separator" => props.decimal_separator = text.clone(),
+                    "grouping-separator" => props.grouping_separator = text.clone(),
+                    "exponent-separator" => props.exponent_separator = text.clone(),
+                    "minus-sign" => props.minus_sign = text.clone(),
+                    "percent" => props.percent = text.clone(),
+                    "per-mille" => props.per_mille = text.clone(),
+                    "zero-digit" => props.zero_digit = text.clone(),
+                    "digit" => props.digit = text.clone(),
+                    "pattern-separator" => props.pattern_separator = text.clone(),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let mut decimal_digit_family: Vec<char> = Vec::new();
+    let zero_char_code = first_char_or(&props.zero_digit, '0') as u32;
+    let mut codepoint = zero_char_code;
+    while codepoint < zero_char_code + 10 {
+        decimal_digit_family.push(char::from_u32(codepoint).unwrap_or('0'));
+        codepoint += 1;
+    }
+
+    let digit_placeholder = first_char_or(&props.digit, '#');
+    let mut active_chars = decimal_digit_family.clone();
+    active_chars.push(first_char_or(&props.decimal_separator, '.'));
+    active_chars.push(first_char_or(&props.exponent_separator, 'e'));
+    active_chars.push(first_char_or(&props.grouping_separator, ','));
+    active_chars.push(digit_placeholder);
+    active_chars.push(first_char_or(&props.pattern_separator, ';'));
+
+    let subpictures: Vec<&str> = picture_string.split(&props.pattern_separator).collect();
+    if subpictures.len() > 2 {
+        return Err(JsonError::new("D3080", "Too many subpictures in picture string"));
+    }
+
+    let mut pictures: Vec<NumberFormatPicture> = Vec::new();
+    for subpicture in subpictures {
+        let parts = split_parts(subpicture, &props, &active_chars);
+        validate_picture(&parts, &props, &decimal_digit_family, &active_chars)?;
+        pictures.push(analyse_picture(&parts, &props, &decimal_digit_family));
+    }
+
+    let decimal_separator = first_char_or(&props.decimal_separator, '.');
+    let grouping_separator = first_char_or(&props.grouping_separator, ',');
+    let zero_digit = first_char_or(&props.zero_digit, '0');
+
+    if pictures.len() == 1 {
+        let mut negative_pic = pictures[0].clone();
+        negative_pic.prefix = format!("{}{}", props.minus_sign, negative_pic.prefix);
+        pictures.push(negative_pic);
+    }
+
+    let pic = if raw_value >= 0.0 {
+        &pictures[0]
+    } else {
+        &pictures[1]
+    };
+
+    let adjusted_number = if pic.picture.contains(&props.percent) {
+        raw_value * 100.0
+    } else if pic.picture.contains(&props.per_mille) {
+        raw_value * 1000.0
+    } else {
+        raw_value
+    };
+
+    let mut mantissa = adjusted_number;
+    let mut exponent: Option<i64> = None;
+    if pic.minimum_exponent_size > 0 {
+        let max_mantissa = 10f64.powi(pic.scaling_factor as i32);
+        let min_mantissa = 10f64.powi(pic.scaling_factor.saturating_sub(1) as i32);
+        let mut exp = 0i64;
+
+        if mantissa != 0.0 {
+            while mantissa.abs() < min_mantissa {
+                mantissa *= 10.0;
+                exp -= 1;
+            }
+            while mantissa.abs() > max_mantissa {
+                mantissa /= 10.0;
+                exp += 1;
+            }
+        }
+        exponent = Some(exp);
+    }
+
+    let rounded_number = crate::functions::math::round(
+        Some(mantissa),
+        Some(pic.maximum_fractional_part_size as f64),
+    )
+    .unwrap_or(mantissa);
+
+    let make_string = |num: f64, dp: usize| -> String {
+        let mut text = to_fixed_abs(num, dp);
+        if zero_digit == '0' {
+            return text;
+        }
+
+        text = text
+            .chars()
+            .map(|digit| {
+                if digit.is_ascii_digit() {
+                    let index = digit as usize - '0' as usize;
+                    return *decimal_digit_family.get(index).unwrap_or(&digit);
+                }
+                digit
+            })
+            .collect::<String>();
+        text
+    };
+
+    let mut string_value = make_string(rounded_number, pic.maximum_fractional_part_size);
+    if !string_value.contains('.') {
+        string_value.push(decimal_separator);
+    } else {
+        string_value = string_value.replacen('.', &props.decimal_separator, 1);
+    }
+
+    while string_value.starts_with(zero_digit) {
+        string_value = string_value.chars().skip(1).collect();
+    }
+    while string_value.ends_with(zero_digit) {
+        string_value.pop();
+    }
+
+    let mut decimal_pos = string_value
+        .find(decimal_separator)
+        .map(|idx| string_value[..idx].chars().count())
+        .unwrap_or(string_value.chars().count());
+
+    let pad_left = pic.minimum_integer_part_size.saturating_sub(decimal_pos);
+    let current_right = string_value.chars().count().saturating_sub(decimal_pos + 1);
+    let pad_right = pic.minimum_fractional_part_size.saturating_sub(current_right);
+    string_value = format!("{}{}", repeat_token(&props.zero_digit, pad_left), string_value);
+    string_value = format!("{}{}", string_value, repeat_token(&props.zero_digit, pad_right));
+
+    decimal_pos = string_value
+        .find(decimal_separator)
+        .map(|idx| string_value[..idx].chars().count())
+        .unwrap_or(string_value.chars().count());
+
+    if pic.regular_grouping > 0 {
+        let group_count = decimal_pos.saturating_sub(1) / pic.regular_grouping;
+        let mut group = 1usize;
+        while group <= group_count {
+            let insert_pos = decimal_pos - group * pic.regular_grouping;
+            string_value = insert_char_at(&string_value, insert_pos, grouping_separator);
+            group += 1;
+        }
+    } else {
+        for pos in &pic.integer_part_grouping_positions {
+            let insert_pos = decimal_pos.saturating_sub(*pos);
+            string_value = insert_char_at(&string_value, insert_pos, grouping_separator);
+            decimal_pos += 1;
+        }
+    }
+
+    decimal_pos = string_value
+        .find(decimal_separator)
+        .map(|idx| string_value[..idx].chars().count())
+        .unwrap_or(string_value.chars().count());
+    for pos in &pic.fractional_part_grouping_positions {
+        let insert_pos = pos + decimal_pos + 1;
+        string_value = insert_char_at(&string_value, insert_pos, grouping_separator);
+    }
+
+    decimal_pos = string_value
+        .find(decimal_separator)
+        .map(|idx| string_value[..idx].chars().count())
+        .unwrap_or(string_value.chars().count());
+    if !pic.picture.contains(decimal_separator)
+        || decimal_pos == string_value.chars().count().saturating_sub(1)
+    {
+        string_value = string_value.chars().take(string_value.chars().count() - 1).collect();
+    }
+
+    if let Some(exp) = exponent {
+        let mut string_exponent = make_string(exp as f64, 0);
+        let pad_exponent = pic
+            .minimum_exponent_size
+            .saturating_sub(string_exponent.chars().count());
+        if pad_exponent > 0 {
+            string_exponent = format!("{}{}", repeat_token(&props.zero_digit, pad_exponent), string_exponent);
+        }
+        let exp_sign = if exp < 0 {
+            props.minus_sign.clone()
+        } else {
+            String::new()
+        };
+        string_value = format!(
+            "{}{}{}{}",
+            string_value, props.exponent_separator, exp_sign, string_exponent
+        );
+    }
+
+    Ok(JsonValue::String(format!(
+        "{}{}{}",
+        pic.prefix, string_value, pic.suffix
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -810,5 +1466,28 @@ mod tests {
         let pad_char = JsonValue::String("0".to_owned());
         let result = pad(&value, &width, &pad_char).unwrap();
         assert!(matches!(result, JsonValue::String(ref s) if s == "007"));
+    }
+
+    #[test]
+    fn format_base_default() {
+        let result = format_base(&JsonValue::Number(100.0), &JsonValue::Undefined).unwrap();
+        assert!(matches!(result, JsonValue::String(ref s) if s == "100"));
+    }
+
+    #[test]
+    fn format_base_binary() {
+        let result = format_base(&JsonValue::Number(100.0), &JsonValue::Number(2.0)).unwrap();
+        assert!(matches!(result, JsonValue::String(ref s) if s == "1100100"));
+    }
+
+    #[test]
+    fn format_number_basic() {
+        let result = format_number(
+            &JsonValue::Number(12345.6),
+            &JsonValue::String("#,###.00".to_owned()),
+            &JsonValue::Undefined,
+        )
+        .unwrap();
+        assert!(matches!(result, JsonValue::String(ref s) if s == "12,345.60"));
     }
 }
