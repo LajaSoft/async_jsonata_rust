@@ -1,12 +1,10 @@
 /**
- * Hybrid parser that prefers the Rust implementation and falls back to the
- * original JavaScript Pratt parser when the native addon is unavailable.
+ * Native parser bridge backed by the Rust implementation. shall never contain fallbacks to JS parser.
  */
 
 (function () {
     'use strict';
 
-    const upstreamParser = require('../../jsonata/src/parser');
     const native = require('../native/index.node');
 
     function reviveRegexLiterals(node) {
@@ -61,7 +59,10 @@
 
     function callRustParser(source, recover) {
         if (!native || typeof native.parseExpression !== 'function') {
-            return null;
+            throw ensureStack({
+                code: 'S0001',
+                message: 'Rust parser is unavailable'
+            });
         }
 
         const result = native.parseExpression(source, recover);
@@ -73,7 +74,10 @@
             return result;
         }
 
-        return null;
+        throw ensureStack({
+            code: 'S0002',
+            message: 'Rust parser returned invalid response'
+        });
     }
 
     function ensureStack(error) {
@@ -85,16 +89,16 @@
 
     function parser(source, recover) {
         const rustResult = callRustParser(source, Boolean(recover));
-        if (rustResult) {
-            if (rustResult.ok === true) {
-                return rustResult.ast;
-            }
-            if (rustResult.error) {
-                throw ensureStack(rustResult.error);
-            }
+        if (rustResult.ok === true) {
+            return rustResult.ast;
         }
-
-        return upstreamParser(source, recover);
+        if (rustResult.error) {
+            throw ensureStack(rustResult.error);
+        }
+        throw ensureStack({
+            code: 'S0003',
+            message: 'Rust parser did not return an AST'
+        });
     }
 
     module.exports = parser;
