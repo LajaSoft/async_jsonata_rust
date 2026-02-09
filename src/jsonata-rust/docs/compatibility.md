@@ -32,7 +32,6 @@ This document tracks compatibility of `async_jsonata_rust` against the reference
 | Full official suite pass/fail dashboard | Planned |
 
 ## Known deviations
-- `Evaluator::evaluate` currently returns `E0001` while runtime engine parity is under active development.
 - Full claim for all official `jsonata-js` test-suite groups is intentionally deferred.
 - Bridge-level error-shape shims may exist for JS interop compatibility.
 

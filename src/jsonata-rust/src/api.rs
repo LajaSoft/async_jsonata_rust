@@ -259,8 +259,8 @@ impl FunctionRegistry {
 
 /// Stable evaluator facade.
 ///
-/// Full JSONata evaluation parity is not finished yet. `evaluate` currently returns
-/// an explicit not-implemented error and is kept as stable API surface for upcoming releases.
+/// End-to-end evaluation is available for parser/runtime features currently implemented
+/// in this crate. Full JSONata-js parity is still in progress.
 ///
 /// # Examples
 /// ```rust

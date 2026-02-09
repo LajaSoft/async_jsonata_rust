@@ -24,6 +24,38 @@ fn number_to_json_value(value: Option<f64>) -> JsonValue {
     }
 }
 
+fn sum_json_value(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    match value {
+        JsonValue::Undefined | JsonValue::Null => Ok(JsonValue::Undefined),
+        JsonValue::Array(array) => {
+            if array.elements.is_empty() {
+                return Ok(JsonValue::Undefined);
+            }
+
+            let mut total = 0.0;
+            for element in &array.elements {
+                let Some(number) = json_value_to_number(element) else {
+                    return Err(JsonError::new(
+                        "D3050",
+                        "$sum() expects the input array to contain only numeric values",
+                    ));
+                };
+                total += number;
+            }
+            Ok(JsonValue::Number(total))
+        }
+        other => {
+            let Some(number) = json_value_to_number(other) else {
+                return Err(JsonError::new(
+                    "D3050",
+                    "$sum() expects a numeric argument or an array of numerics",
+                ));
+            };
+            Ok(JsonValue::Number(number))
+        }
+    }
+}
+
 /// Direct callable for built-in Rust functions
 #[derive(Clone)]
 struct BuiltinCallable {
@@ -160,6 +192,22 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
         }))),
     );
 
+    registry.insert(
+        "sum".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
+            let value = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            sum_json_value(&value)
+        }))),
+    );
+
+    registry.insert(
+        "count".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
+            let value = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            Ok(math::count_value(&value))
+        }))),
+    );
+
     // Core functions (sync)
     registry.insert(
         "exists".to_string(),
@@ -235,6 +283,15 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
             let array = args[0].clone();
             let func = args[1].clone();
             Box::pin(core::filter(ctx, array, func))
+        }))),
+    );
+
+    registry.insert(
+        "sift".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::async_fn(Some(2), |ctx, args| {
+            let input = args[0].clone();
+            let func = args[1].clone();
+            Box::pin(core::sift(ctx, input, func))
         }))),
     );
 
@@ -315,6 +372,30 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
             let width = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
             let char_value = args.get(2).cloned().unwrap_or(JsonValue::Undefined);
             strings::pad(&args[0], &width, &char_value)
+        }))),
+    );
+
+    registry.insert(
+        "contains".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(2), |args| {
+            let source = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let token = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
+            match (source, token) {
+                (JsonValue::String(source), JsonValue::String(token)) => {
+                    Ok(JsonValue::Bool(source.contains(token.as_str())))
+                }
+                (JsonValue::Array(array), JsonValue::String(token)) => {
+                    for item in array.elements {
+                        if let JsonValue::String(text) = item {
+                            if text.contains(token.as_str()) {
+                                return Ok(JsonValue::Bool(true));
+                            }
+                        }
+                    }
+                    Ok(JsonValue::Bool(false))
+                }
+                _ => Ok(JsonValue::Bool(false)),
+            }
         }))),
     );
 

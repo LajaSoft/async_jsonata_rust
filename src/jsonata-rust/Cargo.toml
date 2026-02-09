@@ -1,6 +1,6 @@
 [package]
 name = "async_jsonata_rust"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.78"
 description = "Async-first JSONata parser/runtime crate with stable Rust API facade"

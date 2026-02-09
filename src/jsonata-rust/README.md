@@ -6,7 +6,7 @@ Async-first JSONata library for Rust: parser, runtime primitives, async custom f
 
 ### Scope
 - `parser`: JSONata expression parsing into AST JSON (`serde_json::Value`), including recover mode.
-- `evaluator`: stable API exists (`Evaluator`), full runtime parity is in progress.
+- `evaluator`: end-to-end expression evaluation is implemented (including `bind`, `lambda`, `apply`, path/filter/sort flows used by current native tests).
 - `async custom functions`: supported through `JsonCallable`/`JsonataCallable` and async operators (`map`, `filter`, `single`, `foldLeft`).
 - `compatibility level`: parser + runtime primitives are production-oriented, full end-to-end evaluator parity is tracked explicitly.
 
@@ -28,33 +28,59 @@ println!("AST kind: {}", expr.ast()["type"]);
 # Ok::<(), async_jsonata_rust::Error>(())
 ```
 
-## Evaluation example (what works now)
+## Evaluation example
 
 ```rust
-use async_jsonata_rust::types::{FunctionContext, JsonValue};
-use async_jsonata_rust::{Evaluator, FunctionRegistry};
-use futures::executor::block_on;
+use async_jsonata_rust::{Evaluator, JsonValue, JsonObject};
 
 let evaluator = Evaluator::with_builtins();
-let expr = evaluator.parse("$sqrt(81)")?;
+let expr = evaluator.parse(
+    "(
+      $norm := function($o){$sum($o.items.(price * qty))};
+      $map(orders, function($o){{\"id\": $o.id, \"total\": $norm($o)}})
+    )"
+)?;
 
-// Stable evaluator API is available, runtime parity is still in progress.
-let eval_status = evaluator.evaluate(&expr, &JsonValue::Null).unwrap_err();
-assert_eq!(eval_status.code(), "E0001");
+let input = JsonValue::Object(JsonObject(vec![(
+    "orders".to_string(),
+    JsonValue::Array(async_jsonata_rust::JsonArray::new(
+        vec![
+            JsonValue::Object(JsonObject(vec![
+                ("id".to_string(), JsonValue::String("A1".to_string())),
+                ("items".to_string(), JsonValue::Array(async_jsonata_rust::JsonArray::new(
+                    vec![
+                        JsonValue::Object(JsonObject(vec![
+                            ("price".to_string(), JsonValue::Number(10.0)),
+                            ("qty".to_string(), JsonValue::Number(2.0)),
+                        ])),
+                        JsonValue::Object(JsonObject(vec![
+                            ("price".to_string(), JsonValue::Number(5.0)),
+                            ("qty".to_string(), JsonValue::Number(2.0)),
+                        ])),
+                    ],
+                    false,
+                    false,
+                ))),
+            ])),
+        ],
+        false,
+        false,
+    )),
+)]));
 
-// Runtime primitives already execute built-ins and async custom functions.
-let registry = FunctionRegistry::with_builtins();
-let sqrt = registry.get("sqrt").unwrap().clone();
-let value = block_on(sqrt.call(FunctionContext::empty(), vec![JsonValue::Number(81.0)]))?;
-assert_eq!(value, JsonValue::Number(9.0));
-# Ok::<(), Box<dyn std::error::Error>>(())
+let out = evaluator.evaluate(&expr, &input)?;
+println!("{out:?}");
+# Ok::<(), async_jsonata_rust::Error>(())
 ```
 
 Runnable examples:
 - `examples/basic_eval.rs`
+- `examples/evaluator_end_to_end.rs`
+- `examples/evaluator_bind_lambda.rs`
 - `examples/async_function.rs`
 - `examples/custom_registry.rs`
 - `examples/error_handling.rs`
+- `examples/registry_usage.rs`
 
 ## Docs and links
 - Crate docs on `docs.rs` will appear after first publish.
@@ -72,16 +98,25 @@ Reference engine: `jsonata-js` `2.1.0`.
 | Area / test groups | Compatibility | Evidence |
 |---|---|---|
 | Parser grammar (paths, predicates, functions, chains) | High | Rust parser tests + JS suite fixtures in repo |
-| Built-in runtime helpers (math/core/string primitives) | Medium | `tests/native_wrapper.rs` + function module tests |
+| Built-in runtime helpers (math/core/string primitives) | High | `tests/native_wrapper.rs` + function module tests |
 | Async function execution (`Pending -> Ready`) | High | async callable tests in `tests/native_wrapper.rs` |
-| Full evaluator output parity across all suite groups | In progress | evaluator facade exists, runtime engine not finalized |
+| Full evaluator output parity across all suite groups | In progress | complex evaluator integration tests are green, full suite parity still in progress |
 
 Detailed matrix: `docs/compatibility.md`.
 
 ## Known deviations
 - Full evaluator parity with `jsonata-js` is not claimed yet.
-- `Evaluator::evaluate` currently returns `E0001` until runtime parity lands.
 - Some bridge-focused compatibility shims remain in `jsonata-js-rust/native`.
+
+## Run examples
+
+```bash
+cargo run --example basic_parse
+cargo run --example basic_eval
+cargo run --example evaluator_end_to_end
+cargo run --example evaluator_bind_lambda
+cargo run --example async_function
+```
 
 ## MSRV
 - `rust-version = 1.78`.
