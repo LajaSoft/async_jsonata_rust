@@ -343,12 +343,7 @@ pub async fn sort(
 
     let callable = match comparator {
         JsonValue::Function(func) => func,
-        _ => {
-            return Err(JsonError::new(
-                "D3070",
-                "Comparator must be a function",
-            ))
-        }
+        _ => return Err(JsonError::new("D3070", "Comparator must be a function")),
     };
 
     let mut sorted: Vec<JsonValue> = Vec::with_capacity(input_array.elements.len());

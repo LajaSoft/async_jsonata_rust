@@ -285,7 +285,11 @@ fn format_js_number(value: f64) -> String {
         let mut out = if new_pos <= 0 {
             format!("0.{}{}", "0".repeat((-new_pos) as usize), digits_only)
         } else if new_pos as usize >= digits_only.len() {
-            format!("{}{}", digits_only, "0".repeat(new_pos as usize - digits_only.len()))
+            format!(
+                "{}{}",
+                digits_only,
+                "0".repeat(new_pos as usize - digits_only.len())
+            )
         } else {
             let idx = new_pos as usize;
             format!("{}.{}", &digits_only[..idx], &digits_only[idx..])
@@ -871,7 +875,8 @@ fn count_occurrences(input: &str, needle: &str) -> usize {
 }
 
 fn count_decimal_digits(input: &str, decimal_digit_family: &[char]) -> usize {
-    input.chars()
+    input
+        .chars()
         .filter(|ch| decimal_digit_family.contains(ch))
         .count()
 }
@@ -881,7 +886,8 @@ fn count_decimal_or_optional_digits(
     decimal_digit_family: &[char],
     digit_placeholder: char,
 ) -> usize {
-    input.chars()
+    input
+        .chars()
         .filter(|ch| decimal_digit_family.contains(ch) || *ch == digit_placeholder)
         .count()
 }
@@ -935,7 +941,8 @@ fn split_parts(
 
     let (mantissa_part, exponent_part) = if let Some(position) = exponent_position {
         let left = active_part[..position - prefix.len()].to_owned();
-        let right = active_part[position - prefix.len() + props.exponent_separator.len()..].to_owned();
+        let right =
+            active_part[position - prefix.len() + props.exponent_separator.len()..].to_owned();
         (left, Some(right))
     } else {
         (active_part.clone(), None)
@@ -997,7 +1004,10 @@ fn validate_picture(
         error_code = Some("D3085");
     }
 
-    let has_passive_char = parts.active_part.chars().any(|ch| !active_chars.contains(&ch));
+    let has_passive_char = parts
+        .active_part
+        .chars()
+        .any(|ch| !active_chars.contains(&ch));
     if has_passive_char {
         error_code = Some("D3086");
     }
@@ -1018,7 +1028,10 @@ fn validate_picture(
         error_code = Some("D3088");
     }
 
-    if parts.subpicture.contains(&(props.grouping_separator.clone() + &props.grouping_separator)) {
+    if parts
+        .subpicture
+        .contains(&(props.grouping_separator.clone() + &props.grouping_separator))
+    {
         error_code = Some("D3089");
     }
 
@@ -1042,7 +1055,8 @@ fn validate_picture(
 
     if let Some(exponent_part) = &parts.exponent_part {
         if !exponent_part.is_empty()
-            && (parts.subpicture.contains(&props.percent) || parts.subpicture.contains(&props.per_mille))
+            && (parts.subpicture.contains(&props.percent)
+                || parts.subpicture.contains(&props.per_mille))
         {
             error_code = Some("D3092");
         }
@@ -1123,7 +1137,8 @@ fn analyse_picture(
     };
 
     let fractional_part_grouping_positions = get_grouping_positions(&parts.fractional_part, true);
-    let mut minimum_integer_part_size = count_decimal_digits(&parts.integer_part, decimal_digit_family);
+    let mut minimum_integer_part_size =
+        count_decimal_digits(&parts.integer_part, decimal_digit_family);
     let scaling_factor = minimum_integer_part_size;
     let mut minimum_fractional_part_size =
         count_decimal_digits(&parts.fractional_part, decimal_digit_family);
@@ -1299,7 +1314,10 @@ pub fn format_number(
 
     let subpictures: Vec<&str> = picture_string.split(&props.pattern_separator).collect();
     if subpictures.len() > 2 {
-        return Err(JsonError::new("D3080", "Too many subpictures in picture string"));
+        return Err(JsonError::new(
+            "D3080",
+            "Too many subpictures in picture string",
+        ));
     }
 
     let mut pictures: Vec<NumberFormatPicture> = Vec::new();
@@ -1399,9 +1417,19 @@ pub fn format_number(
 
     let pad_left = pic.minimum_integer_part_size.saturating_sub(decimal_pos);
     let current_right = string_value.chars().count().saturating_sub(decimal_pos + 1);
-    let pad_right = pic.minimum_fractional_part_size.saturating_sub(current_right);
-    string_value = format!("{}{}", repeat_token(&props.zero_digit, pad_left), string_value);
-    string_value = format!("{}{}", string_value, repeat_token(&props.zero_digit, pad_right));
+    let pad_right = pic
+        .minimum_fractional_part_size
+        .saturating_sub(current_right);
+    string_value = format!(
+        "{}{}",
+        repeat_token(&props.zero_digit, pad_left),
+        string_value
+    );
+    string_value = format!(
+        "{}{}",
+        string_value,
+        repeat_token(&props.zero_digit, pad_right)
+    );
 
     decimal_pos = string_value
         .find(decimal_separator)
@@ -1440,7 +1468,10 @@ pub fn format_number(
     if !pic.picture.contains(decimal_separator)
         || decimal_pos == string_value.chars().count().saturating_sub(1)
     {
-        string_value = string_value.chars().take(string_value.chars().count() - 1).collect();
+        string_value = string_value
+            .chars()
+            .take(string_value.chars().count() - 1)
+            .collect();
     }
 
     if let Some(exp) = exponent {
@@ -1449,7 +1480,11 @@ pub fn format_number(
             .minimum_exponent_size
             .saturating_sub(string_exponent.chars().count());
         if pad_exponent > 0 {
-            string_exponent = format!("{}{}", repeat_token(&props.zero_digit, pad_exponent), string_exponent);
+            string_exponent = format!(
+                "{}{}",
+                repeat_token(&props.zero_digit, pad_exponent),
+                string_exponent
+            );
         }
         let exp_sign = if exp < 0 {
             props.minus_sign.clone()

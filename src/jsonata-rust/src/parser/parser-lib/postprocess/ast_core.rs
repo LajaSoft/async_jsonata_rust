@@ -1,8 +1,8 @@
 use serde_json::Value;
 
+use super::super::super::error::ParserError;
 use super::common::{is_type, map_position};
 use super::path_ops::process_binary;
-use super::super::super::error::ParserError;
 
 pub(crate) fn process_ast(expr: Value) -> Result<Value, ParserError> {
     let keep_array = expr
@@ -25,10 +25,7 @@ pub(crate) fn process_ast(expr: Value) -> Result<Value, ParserError> {
 }
 
 fn process_ast_object(mut map: serde_json::Map<String, Value>) -> Result<Value, ParserError> {
-    let expr_type = map
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let expr_type = map.get("type").and_then(Value::as_str).unwrap_or_default();
 
     match expr_type {
         "binary" => process_binary(Value::Object(map)),
@@ -71,14 +68,11 @@ fn process_ast_object(mut map: serde_json::Map<String, Value>) -> Result<Value, 
             {
                 code = "S0207";
             }
-            Err(
-                ParserError::new(code, map_position(&map))
-                    .with_token(map.get("value").cloned().unwrap_or(Value::Null)),
-            )
+            Err(ParserError::new(code, map_position(&map))
+                .with_token(map.get("value").cloned().unwrap_or(Value::Null)))
         }
     }
 }
-
 
 fn process_unary(mut map: serde_json::Map<String, Value>) -> Result<Value, ParserError> {
     let mut result = serde_json::Map::new();
@@ -314,7 +308,11 @@ fn process_block(mut map: serde_json::Map<String, Value>) -> Result<Value, Parse
             has_consarray = true;
         }
         if is_type(&part, "path") {
-            if let Some(first_step) = part.get("steps").and_then(Value::as_array).and_then(|steps| steps.first()) {
+            if let Some(first_step) = part
+                .get("steps")
+                .and_then(Value::as_array)
+                .and_then(|steps| steps.first())
+            {
                 if first_step
                     .get("consarray")
                     .and_then(Value::as_bool)
@@ -356,8 +354,6 @@ fn process_operator(mut map: serde_json::Map<String, Value>) -> Result<Value, Pa
     if value == "?" {
         return Ok(Value::Object(map));
     }
-    Err(
-        ParserError::new("S0201", map_position(&map))
-            .with_token(map.get("value").cloned().unwrap_or(Value::Null)),
-    )
+    Err(ParserError::new("S0201", map_position(&map))
+        .with_token(map.get("value").cloned().unwrap_or(Value::Null)))
 }

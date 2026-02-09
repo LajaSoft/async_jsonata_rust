@@ -1,11 +1,11 @@
 use serde_json::Value;
 
+use super::super::super::error::ParserError;
 use super::common::map_position;
 use super::slots::{
     adjust_stage_slots, apply_slot_aliases, collect_push_from_children, collect_push_slots,
     has_focus, new_parent_slot, seek_parent, set_seeking_parent, slot_level, ParentReferenceState,
 };
-use super::super::super::error::ParserError;
 
 pub(crate) fn annotate_parent_references(expr: Value) -> Result<Value, ParserError> {
     let mut state = ParentReferenceState::default();

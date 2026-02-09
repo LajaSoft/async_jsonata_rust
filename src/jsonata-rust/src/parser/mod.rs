@@ -1,13 +1,12 @@
-//! JSONata parser implementation translated from the upstream JavaScript Pratt parser.
+//! Low-level JSONata parser module.
 //!
-//! This module currently focuses on scaffolding the tokenizer and AST nodes so we can begin
-//! porting the Pratt parser logic in a mostly mechanical fashion.
+//! Prefer crate-level [`crate::Parser`] for stable public API.
 
 mod ast;
 mod error;
+mod parser;
 #[path = "parser-lib/mod.rs"]
 mod parser_lib;
-mod parser;
 mod tokenizer;
 
 use serde_json::Value;
@@ -18,6 +17,14 @@ pub use parser::Parser;
 
 pub use tokenizer::{Token, TokenKind, Tokenizer};
 
+/// Parses JSONata expression into AST JSON representation.
+///
+/// # Examples
+/// ```rust
+/// let ast = jsonata_rust::parser::parse_expression("Account.Order[0]", false)?;
+/// assert!(ast.is_object());
+/// # Ok::<(), jsonata_rust::parser::ParserError>(())
+/// ```
 pub fn parse_expression(source: &str, recover: bool) -> Result<Value, ParserError> {
     Parser::new(source, recover)?.parse()
 }

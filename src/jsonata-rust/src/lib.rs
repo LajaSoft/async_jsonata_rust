@@ -1,7 +1,20 @@
-//! `jsonata_rust` is an async-first Rust implementation of JSONata.
+#![allow(clippy::approx_constant)]
+#![allow(clippy::cast_abs_to_unsigned)]
+#![allow(clippy::get_first)]
+#![allow(clippy::manual_range_contains)]
+#![allow(clippy::module_inception)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::result_large_err)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::unnecessary_map_or)]
+
+//! Async-first JSONata crate for Rust.
 //!
-//! This crate currently exposes parser APIs, core JSONata value/function types,
-//! builtin function registry wiring, and async-capable function execution helpers.
+//! This crate exposes a stable public surface focused on:
+//! - JSONata parsing (`Parser`, `Expression`)
+//! - function registry management (`FunctionRegistry`)
+//! - async custom functions (`types::JsonCallable` / `types::JsonataCallable`)
+//! - evaluator facade (`Evaluator`, runtime parity in progress)
 //!
 //! JSONata language reference:
 //! - <https://docs.jsonata.org/overview>
@@ -10,14 +23,20 @@
 //!
 //! # Quick Start
 //! ```rust
-//! use jsonata_rust::parser;
+//! use jsonata_rust::Parser;
 //!
-//! let ast = parser::parse_expression("Account.Order[0].Product", false)
-//!     .expect("expression should parse");
-//! assert!(ast.is_object());
+//! let parser = Parser::new();
+//! let expression = parser.parse("Account.Order[0].Product")?;
+//! assert_eq!(expression.ast()["type"], "path");
+//! # Ok::<(), jsonata_rust::Error>(())
 //! ```
 //!
-//! # Async Callable Example
+//! # JSONata syntax
+//! `jsonata_rust` follows JSONata syntax from the official docs and upstream test-suite.
+//! Parser support is production-oriented, while evaluator parity is declared separately in
+//! `docs/compatibility.md` and crate README.
+//!
+//! # Async functions
 //! ```rust
 //! use std::any::Any;
 //! use std::sync::Arc;
@@ -41,9 +60,13 @@
 //!         })
 //!     }
 //!
-//!     fn arity(&self) -> Option<usize> { Some(1) }
+//!     fn arity(&self) -> Option<usize> {
+//!         Some(1)
+//!     }
 //!
-//!     fn as_any(&self) -> &(dyn Any + Send + Sync) { self }
+//!     fn as_any(&self) -> &(dyn Any + Send + Sync) {
+//!         self
+//!     }
 //! }
 //!
 //! let input = JsonValue::Array(JsonArray::new(
@@ -55,15 +78,27 @@
 //! let out = block_on(core::map(FunctionContext::empty(), input, func)).unwrap();
 //! assert!(matches!(out, JsonValue::Array(_)));
 //! ```
+//!
+//! # Errors
+//! Stable APIs return unified [`Error`] with JSONata-style code (`S0201`, `D3040`, ...)
+//! and structured context fields.
 
+pub mod api;
+pub mod error;
 pub mod functions;
 pub mod parser;
 pub mod registry;
 pub mod types;
 
-pub use parser::{parse_expression, Parser, ParserError};
-pub use registry::create_builtin_registry;
+pub use api::{Evaluator, Expression, FunctionRegistry, Parser};
+pub use error::Error;
+
+pub use parser::{
+    parse_expression, AstNode, Parser as LowLevelParser, ParserError, Token, TokenKind, Tokenizer,
+};
+pub use registry::{create_builtin_registry, lookup_builtin};
 pub use types::{
-    JsonataArray, JsonataCallable, JsonataFunction, JsonataObject, JsonataValue, NativeRef,
+    JsonArray, JsonCallable, JsonError, JsonFunction, JsonObject, JsonValue, JsonataArray,
+    JsonataCallable, JsonataFocus, JsonataFunction, JsonataObject, JsonataValue, NativeRef,
     NativeType,
 };

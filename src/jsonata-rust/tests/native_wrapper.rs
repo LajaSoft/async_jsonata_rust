@@ -7,11 +7,11 @@ use futures::executor::block_on;
 use futures::future::BoxFuture;
 use jsonata_rust::functions::{core, math, strings};
 use jsonata_rust::parser;
-use serde_json::json;
 use jsonata_rust::types::{
     FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction, JsonValue, JsonataArray,
     JsonataValue,
 };
+use serde_json::json;
 
 #[derive(Clone)]
 struct DoubleCallable;
@@ -219,8 +219,8 @@ fn core_map_with_rust_callable() {
         true,
         false,
     ));
-    let result = block_on(core::map(FunctionContext::empty(), input, callable))
-        .expect("map should succeed");
+    let result =
+        block_on(core::map(FunctionContext::empty(), input, callable)).expect("map should succeed");
     assert_eq!(
         result,
         JsonValue::Array(JsonArray::new(

@@ -1,11 +1,13 @@
 use serde_json::{json, Value};
 
+use super::super::super::error::ParserError;
 use super::ast_core::process_ast;
 use super::bindings::{
     process_apply, process_binary_default, process_bind, process_focus_bind, process_index_bind,
 };
-use super::common::{ensure_array_field, expr_position, is_type, last_path_step_mut, step_position};
-use super::super::super::error::ParserError;
+use super::common::{
+    ensure_array_field, expr_position, is_type, last_path_step_mut, step_position,
+};
 
 pub(super) fn process_binary(expr: Value) -> Result<Value, ParserError> {
     let op = expr
@@ -68,10 +70,7 @@ pub(super) fn process_path(expr: Value) -> Result<Value, ParserError> {
                         })
             })
     {
-        if let Some(result_steps) = result
-            .get_mut("steps")
-            .and_then(Value::as_array_mut)
-        {
+        if let Some(result_steps) = result.get_mut("steps").and_then(Value::as_array_mut) {
             if let Some(last_step) = result_steps.last_mut() {
                 if is_type(last_step, "function") {
                     if let Some(next_function) = processed_rhs
@@ -93,11 +92,12 @@ pub(super) fn process_path(expr: Value) -> Result<Value, ParserError> {
     }
 
     if is_type(&processed_rhs, "path") {
-        if let Some(rest_steps) = processed_rhs.get("steps").and_then(Value::as_array).cloned() {
-            if let Some(result_steps) = result
-                .get_mut("steps")
-                .and_then(Value::as_array_mut)
-            {
+        if let Some(rest_steps) = processed_rhs
+            .get("steps")
+            .and_then(Value::as_array)
+            .cloned()
+        {
+            if let Some(result_steps) = result.get_mut("steps").and_then(Value::as_array_mut) {
                 result_steps.extend(rest_steps);
             }
         }
@@ -109,10 +109,7 @@ pub(super) fn process_path(expr: Value) -> Result<Value, ParserError> {
                 }
             }
         }
-        if let Some(result_steps) = result
-            .get_mut("steps")
-            .and_then(Value::as_array_mut)
-        {
+        if let Some(result_steps) = result.get_mut("steps").and_then(Value::as_array_mut) {
             result_steps.push(processed_rhs);
         }
     }
@@ -122,15 +119,10 @@ pub(super) fn process_path(expr: Value) -> Result<Value, ParserError> {
         .and_then(Value::as_array_mut)
         .ok_or_else(|| ParserError::new("S0206", expr_position(&expr)))?;
     for step in steps.iter_mut() {
-        let step_type = step
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let step_type = step.get("type").and_then(Value::as_str).unwrap_or_default();
         if step_type == "number" || step_type == "value" {
-            return Err(
-                ParserError::new("S0213", step_position(step))
-                    .with_value(step.get("value").cloned().unwrap_or(Value::Null)),
-            );
+            return Err(ParserError::new("S0213", step_position(step))
+                .with_value(step.get("value").cloned().unwrap_or(Value::Null)));
         }
         if step_type == "string" {
             if let Some(step_map) = step.as_object_mut() {
@@ -310,4 +302,3 @@ pub(super) fn process_order_by(expr: Value) -> Result<Value, ParserError> {
 
     Ok(result)
 }
-

@@ -16,10 +16,7 @@ impl AstNode {
         fields.insert("id".to_string(), Value::String(id.clone()));
         fields.insert("type".to_string(), Value::String(token_type.clone()));
         fields.insert("value".to_string(), value.clone());
-        fields.insert(
-            "position".to_string(),
-            json!(position as u64),
-        );
+        fields.insert("position".to_string(), json!(position as u64));
 
         Self {
             id,
@@ -65,18 +62,11 @@ impl From<AstNode> for Value {
     fn from(mut node: AstNode) -> Self {
         node.fields
             .insert("id".to_string(), Value::String(node.id.clone()));
-        node.fields.insert(
-            "value".to_string(),
-            node.value.clone(),
-        );
-        node.fields.insert(
-            "type".to_string(),
-            Value::String(node.node_type.clone()),
-        );
-        node.fields.insert(
-            "position".to_string(),
-            json!(node.position as u64),
-        );
+        node.fields.insert("value".to_string(), node.value.clone());
+        node.fields
+            .insert("type".to_string(), Value::String(node.node_type.clone()));
+        node.fields
+            .insert("position".to_string(), json!(node.position as u64));
         Value::Object(node.fields)
     }
 }

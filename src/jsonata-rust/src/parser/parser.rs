@@ -75,8 +75,8 @@ impl<'a> Parser<'a> {
         };
         if let Some(current) = &self.current {
             if current.id != "(end)" {
-                let err = ParserError::new("S0201", current.position)
-                    .with_token(current.value.clone());
+                let err =
+                    ParserError::new("S0201", current.position).with_token(current.value.clone());
                 if self.recover {
                     self.push_error(err, true, None, false);
                 } else {
@@ -92,14 +92,8 @@ impl<'a> Parser<'a> {
             .is_some_and(|expr_type| expr_type == "parent")
             || processed.get("seekingParent").is_some()
         {
-            let token = processed
-                .get("type")
-                .cloned()
-                .unwrap_or(Value::Null);
-            return Err(
-                ParserError::new("S0217", expr_position(&processed))
-                    .with_token(token),
-            );
+            let token = processed.get("type").cloned().unwrap_or(Value::Null);
+            return Err(ParserError::new("S0217", expr_position(&processed)).with_token(token));
         }
         let mut processed = processed;
         if self.recover && !self.errors.is_empty() {
@@ -176,8 +170,7 @@ impl<'a> Parser<'a> {
     }
 
     fn nud(&mut self, token: TokenData) -> Result<AstNode, ParserError> {
-        if token.token_type == "operator"
-            && matches!(token.id.as_str(), "and" | "or" | "in" | "?")
+        if token.token_type == "operator" && matches!(token.id.as_str(), "and" | "or" | "in" | "?")
         {
             return Ok(AstNode::new(
                 token.id,
@@ -231,9 +224,12 @@ impl<'a> Parser<'a> {
             }
             "|" => self.parse_transform(token),
             _ => {
-                let code = if token.id == "(end)" { "S0207" } else { "S0211" };
-                Err(ParserError::new(code, token.position)
-                    .with_token(token.value.clone()))
+                let code = if token.id == "(end)" {
+                    "S0207"
+                } else {
+                    "S0211"
+                };
+                Err(ParserError::new(code, token.position).with_token(token.value.clone()))
             }
         }
     }
@@ -254,8 +250,7 @@ impl<'a> Parser<'a> {
             "?" => self.parse_ternary(token, left),
             "?:" => self.parse_default(token, left),
             ":=" => self.parse_assignment(token, left),
-            ".."
-            | ";" => self.parse_binary(token, left),
+            ".." | ";" => self.parse_binary(token, left),
             _ => Err(ParserError::new("S0201", token.position)),
         }
     }
@@ -354,14 +349,9 @@ impl<'a> Parser<'a> {
                 let Some(existing_obj) = existing.as_object() else {
                     continue;
                 };
-                let code_matches = existing_obj
-                    .get("code")
-                    .and_then(Value::as_str)
-                    == code;
-                let position_matches = existing_obj
-                    .get("position")
-                    .and_then(Value::as_u64)
-                    == position;
+                let code_matches = existing_obj.get("code").and_then(Value::as_str) == code;
+                let position_matches =
+                    existing_obj.get("position").and_then(Value::as_u64) == position;
                 let token_matches = existing_obj.get("token") == token;
                 if code_matches && position_matches && token_matches {
                     *existing = inline.clone();
@@ -398,7 +388,8 @@ impl<'a> Parser<'a> {
     }
 
     fn consume_to_end(&mut self) {
-        while matches!(self.current.as_ref().map(|token| token.id.as_str()), Some(id) if id != "(end)") {
+        while matches!(self.current.as_ref().map(|token| token.id.as_str()), Some(id) if id != "(end)")
+        {
             if self.advance(false).is_err() {
                 break;
             }
@@ -484,10 +475,8 @@ impl<'a> Parser<'a> {
             },
         };
         if token.token_type == "operator" && !is_known_operator(&token.id) {
-            return Err(
-                ParserError::new("S0204", token.position)
-                    .with_token(Value::String(token.id.clone())),
-            );
+            return Err(ParserError::new("S0204", token.position)
+                .with_token(Value::String(token.id.clone())));
         }
         self.current = Some(token);
         Ok(())
@@ -495,11 +484,8 @@ impl<'a> Parser<'a> {
 
     fn next_token(&mut self, infix: bool) -> Result<Option<TokenData>, ParserError> {
         let token = self.tokenizer.next(infix).map_err(|err| {
-            ParserError::new(err.code, err.position).with_token(
-                err.token
-                    .map(Value::String)
-                    .unwrap_or(Value::Null),
-            )
+            ParserError::new(err.code, err.position)
+                .with_token(err.token.map(Value::String).unwrap_or(Value::Null))
         })?;
         Ok(token.map(|t| TokenData {
             id: match t.kind {
@@ -539,8 +525,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(")", true)?;
-        let mut node =
-            AstNode::new(token.id, token.token_type, token.value, token.position);
+        let mut node = AstNode::new(token.id, token.token_type, token.value, token.position);
         node.set_type("block");
         node.set_field(
             "expressions",
@@ -558,8 +543,12 @@ impl<'a> Parser<'a> {
             let mut item = self.expression(0)?;
             if let Some(current) = &self.current {
                 if current.id == ".." {
-                    let mut range =
-                        AstNode::new("..".to_string(), "operator".to_string(), Value::String("..".into()), current.position);
+                    let mut range = AstNode::new(
+                        "..".to_string(),
+                        "operator".to_string(),
+                        Value::String("..".into()),
+                        current.position,
+                    );
                     self.advance(false)?;
                     range.set_type("binary");
                     range.set_node("lhs", item);
@@ -577,8 +566,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect("]", true)?;
-        let mut node =
-            AstNode::new(token.id, token.token_type, token.value, token.position);
+        let mut node = AstNode::new(token.id, token.token_type, token.value, token.position);
         node.set_type("unary");
         node.set_field(
             "expressions",
@@ -590,8 +578,7 @@ impl<'a> Parser<'a> {
     fn parse_object(&mut self, token: TokenData) -> Result<AstNode, ParserError> {
         let pairs = self.parse_object_pairs()?;
         self.expect("}", true)?;
-        let mut node =
-            AstNode::new(token.id, token.token_type, token.value, token.position);
+        let mut node = AstNode::new(token.id, token.token_type, token.value, token.position);
         node.set_type("unary");
         let fields = pairs
             .into_iter()
@@ -609,8 +596,7 @@ impl<'a> Parser<'a> {
         let pairs = self.parse_object_pairs()?;
         self.expect("}", true)?;
 
-        let mut node =
-            AstNode::new(token.id, token.token_type, token.value, token.position);
+        let mut node = AstNode::new(token.id, token.token_type, token.value, token.position);
         node.set_type("binary");
         node.set_node("lhs", left);
         let fields = pairs
@@ -654,8 +640,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect("|", false)?;
-        let mut node =
-            AstNode::new(token.id, token.token_type, token.value, token.position);
+        let mut node = AstNode::new(token.id, token.token_type, token.value, token.position);
         node.set_type("transform");
         node.set_node("pattern", pattern);
         node.set_node("update", update);
@@ -666,8 +651,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_dot(&mut self, token: TokenData, left: AstNode) -> Result<AstNode, ParserError> {
-        let mut node =
-            AstNode::new(token.id, token.token_type, token.value, token.position);
+        let mut node = AstNode::new(token.id, token.token_type, token.value, token.position);
         node.set_type("binary");
         node.set_node("lhs", left);
         let right = self.expression(self.binding_power("."))?;
@@ -685,8 +669,7 @@ impl<'a> Parser<'a> {
                 return Ok(left);
             }
         }
-        let mut node =
-            AstNode::new(token.id, token.token_type, token.value, token.position);
+        let mut node = AstNode::new(token.id, token.token_type, token.value, token.position);
         node.set_type("binary");
         node.set_node("lhs", left);
         let right = self.expression(self.binding_power("]"))?;
@@ -730,8 +713,7 @@ impl<'a> Parser<'a> {
         }
         self.expect(")", true)?;
 
-        let arguments_value: Value =
-            Value::Array(args.iter().cloned().map(Into::into).collect());
+        let arguments_value: Value = Value::Array(args.iter().cloned().map(Into::into).collect());
 
         if is_lambda_name(&left) {
             for (index, arg) in args.iter().enumerate() {
@@ -742,8 +724,12 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            let mut lambda =
-                AstNode::new(left.id.clone(), left.token_type.clone(), left.value.clone(), left.position);
+            let mut lambda = AstNode::new(
+                left.id.clone(),
+                left.token_type.clone(),
+                left.value.clone(),
+                left.position,
+            );
             lambda.set_type("lambda");
             lambda.set_field("arguments", arguments_value);
 
@@ -763,8 +749,7 @@ impl<'a> Parser<'a> {
             return Ok(lambda);
         }
 
-        let mut node =
-            AstNode::new(token.id, token.token_type, token.value, token.position);
+        let mut node = AstNode::new(token.id, token.token_type, token.value, token.position);
         if has_partial_argument {
             node.set_type("partial");
         } else {
@@ -775,27 +760,47 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
-    fn parse_focus_bind(&mut self, token: TokenData, left: AstNode) -> Result<AstNode, ParserError> {
-        let mut node =
-            AstNode::new(token.id.clone(), "operator".to_string(), Value::String(token.id), token.position);
+    fn parse_focus_bind(
+        &mut self,
+        token: TokenData,
+        left: AstNode,
+    ) -> Result<AstNode, ParserError> {
+        let mut node = AstNode::new(
+            token.id.clone(),
+            "operator".to_string(),
+            Value::String(token.id),
+            token.position,
+        );
         node.set_type("binary");
         node.set_node("lhs", left);
         let rhs = self.expression(self.binding_power("@"))?;
         if rhs.node_type != "variable" {
-            return Err(ParserError::new("S0214", rhs.position).with_token(Value::String("@".to_string())));
+            return Err(
+                ParserError::new("S0214", rhs.position).with_token(Value::String("@".to_string()))
+            );
         }
         node.set_node("rhs", rhs);
         Ok(node)
     }
 
-    fn parse_index_bind(&mut self, token: TokenData, left: AstNode) -> Result<AstNode, ParserError> {
-        let mut node =
-            AstNode::new(token.id.clone(), "operator".to_string(), Value::String(token.id), token.position);
+    fn parse_index_bind(
+        &mut self,
+        token: TokenData,
+        left: AstNode,
+    ) -> Result<AstNode, ParserError> {
+        let mut node = AstNode::new(
+            token.id.clone(),
+            "operator".to_string(),
+            Value::String(token.id),
+            token.position,
+        );
         node.set_type("binary");
         node.set_node("lhs", left);
         let rhs = self.expression(self.binding_power("#"))?;
         if rhs.node_type != "variable" {
-            return Err(ParserError::new("S0214", rhs.position).with_token(Value::String("#".to_string())));
+            return Err(
+                ParserError::new("S0214", rhs.position).with_token(Value::String("#".to_string()))
+            );
         }
         node.set_node("rhs", rhs);
         Ok(node)
@@ -839,8 +844,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_binary(&mut self, token: TokenData, left: AstNode) -> Result<AstNode, ParserError> {
-        let mut node =
-            AstNode::new(token.id.clone(), "operator".to_string(), token.value.clone(), token.position);
+        let mut node = AstNode::new(
+            token.id.clone(),
+            "operator".to_string(),
+            token.value.clone(),
+            token.position,
+        );
         node.set_type("binary");
         node.set_node("lhs", left);
         let rhs = self.expression(self.binding_power(&token.id))?;
@@ -850,12 +859,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_coalesce(&mut self, token: TokenData, left: AstNode) -> Result<AstNode, ParserError> {
-        let mut node = AstNode::new(
-            token.id,
-            token.token_type,
-            token.value,
-            token.position,
-        );
+        let mut node = AstNode::new(token.id, token.token_type, token.value, token.position);
         node.set_type("condition");
         let mut condition = AstNode::new(
             "(".to_string(),
@@ -881,8 +885,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_ternary(&mut self, token: TokenData, left: AstNode) -> Result<AstNode, ParserError> {
-        let mut node =
-            AstNode::new(token.id, token.token_type, token.value, token.position);
+        let mut node = AstNode::new(token.id, token.token_type, token.value, token.position);
         node.set_type("condition");
         node.set_node("condition", left);
         let then_branch = self.expression(0)?;
@@ -898,8 +901,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_default(&mut self, token: TokenData, left: AstNode) -> Result<AstNode, ParserError> {
-        let mut node =
-            AstNode::new(token.id, token.token_type, token.value, token.position);
+        let mut node = AstNode::new(token.id, token.token_type, token.value, token.position);
         node.set_type("condition");
         node.set_node("condition", left.clone());
         node.set_node("then", left);
@@ -984,7 +986,11 @@ impl<'a> Parser<'a> {
     fn expect(&mut self, id: &str, infix: bool) -> Result<(), ParserError> {
         if let Some(current) = &self.current {
             if current.id != id {
-                let code = if current.id == "(end)" { "S0203" } else { "S0202" };
+                let code = if current.id == "(end)" {
+                    "S0203"
+                } else {
+                    "S0202"
+                };
                 let err = ParserError::new(code, current.position)
                     .with_token(Self::token_value_for_error(current))
                     .with_value(Value::String(id.to_string()));
@@ -1013,8 +1019,7 @@ fn is_lambda_name(node: &AstNode) -> bool {
 fn is_known_operator(id: &str) -> bool {
     matches!(
         id,
-        "."
-            | "["
+        "." | "["
             | "]"
             | "{"
             | "}"

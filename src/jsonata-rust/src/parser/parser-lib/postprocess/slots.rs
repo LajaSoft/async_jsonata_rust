@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
-use super::common::expr_position;
 use super::super::super::error::ParserError;
+use super::common::expr_position;
 
 #[derive(Default)]
 pub(super) struct ParentReferenceState {
@@ -187,8 +187,9 @@ pub(super) fn seek_parent(
             .and_then(Value::as_array_mut)
             .ok_or_else(|| ParserError::new("S0206", node_position))?;
         if steps.is_empty() {
-            return Err(ParserError::new("S0217", node_position)
-                .with_token(Value::String(node_type)));
+            return Err(
+                ParserError::new("S0217", node_position).with_token(Value::String(node_type))
+            );
         }
         let mut step_index = steps.len() as isize - 1;
         if let Some(last_step) = steps.get_mut(step_index as usize) {
@@ -203,10 +204,7 @@ pub(super) fn seek_parent(
         return Ok(());
     }
 
-    Err(
-        ParserError::new("S0217", node_position)
-            .with_token(Value::String(node_type)),
-    )
+    Err(ParserError::new("S0217", node_position).with_token(Value::String(node_type)))
 }
 
 pub(super) fn has_focus(value: &Value) -> bool {
@@ -222,9 +220,7 @@ fn slot_index(slot: &Value) -> Option<usize> {
 }
 
 pub(super) fn slot_level(slot: &Value) -> i64 {
-    slot.get("level")
-        .and_then(Value::as_i64)
-        .unwrap_or(0)
+    slot.get("level").and_then(Value::as_i64).unwrap_or(0)
 }
 
 fn set_slot_level(slot: &mut Value, level: i64) {
@@ -253,9 +249,7 @@ pub(super) fn apply_slot_aliases(node: &mut Value, state: &ParentReferenceState)
             if let Some(ancestor) = map.get_mut("ancestor") {
                 apply_slot_alias(ancestor, state);
             }
-            if let Some(seeking_parent) = map
-                .get_mut("seekingParent")
-                .and_then(Value::as_array_mut)
+            if let Some(seeking_parent) = map.get_mut("seekingParent").and_then(Value::as_array_mut)
             {
                 for slot in seeking_parent {
                     apply_slot_alias(slot, state);

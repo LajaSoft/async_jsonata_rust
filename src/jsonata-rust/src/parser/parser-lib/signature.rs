@@ -6,7 +6,9 @@ pub(crate) struct SignatureValidationError {
     pub(crate) value: Option<Value>,
 }
 
-pub(crate) fn validate_signature_definition(signature: &str) -> Result<(), SignatureValidationError> {
+pub(crate) fn validate_signature_definition(
+    signature: &str,
+) -> Result<(), SignatureValidationError> {
     let chars: Vec<char> = signature.chars().collect();
     let mut position = 1usize;
     let mut previous_param_type: Option<char> = None;
@@ -64,7 +66,12 @@ pub(crate) fn validate_signature_definition(signature: &str) -> Result<(), Signa
     Ok(())
 }
 
-fn find_closing_bracket(chars: &[char], start: usize, open_symbol: char, close_symbol: char) -> usize {
+fn find_closing_bracket(
+    chars: &[char],
+    start: usize,
+    open_symbol: char,
+    close_symbol: char,
+) -> usize {
     let mut depth = 1usize;
     let mut position = start;
 

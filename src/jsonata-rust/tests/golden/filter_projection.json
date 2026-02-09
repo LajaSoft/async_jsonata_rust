@@ -1,0 +1,16 @@
+{
+  "id": "golden-filter-projection",
+  "input": {
+    "items": [
+      {"sku": "p1", "price": 11.5, "qty": 2},
+      {"sku": "p2", "price": 6, "qty": 1},
+      {"sku": "p3", "price": 5, "qty": 0},
+      {"sku": "p4", "price": 9.2, "qty": 3}
+    ]
+  },
+  "expr": "{\"cheapSkus\": items[price < 10 and qty > 0].sku, \"cheapTotal\": $sum(items[price < 10 and qty > 0].(price * qty))}",
+  "expected": {
+    "cheapSkus": ["p2", "p4"],
+    "cheapTotal": 33.599999999999994
+  }
+}

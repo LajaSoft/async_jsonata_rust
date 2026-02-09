@@ -1,8 +1,8 @@
 use serde_json::{json, Value};
 
+use super::super::super::error::ParserError;
 use super::ast_core::process_ast;
 use super::common::{ensure_array_field, expr_position, is_type, last_path_step_mut};
-use super::super::super::error::ParserError;
 
 pub(super) fn process_bind(expr: Value) -> Result<Value, ParserError> {
     let lhs = expr

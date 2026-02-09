@@ -45,9 +45,9 @@ fn main() {
         true,
         false,
     ));
-    let func = JsonValue::Function(JsonFunction::new(Arc::new(DoubleCallable)));
 
-    let output =
-        block_on(core::map(FunctionContext::empty(), input, func)).expect("map should succeed");
-    println!("Async map output: {:?}", output);
+    let callable = JsonValue::Function(JsonFunction::new(Arc::new(DoubleCallable)));
+    let output = block_on(core::map(FunctionContext::empty(), input, callable))
+        .expect("async map should succeed");
+    println!("Output: {:?}", output);
 }

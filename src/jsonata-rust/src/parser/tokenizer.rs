@@ -206,7 +206,12 @@ impl<'a> Tokenizer<'a> {
                 TokenValue::Regex { pattern, flags } => format!("/{pattern}/{flags}"),
                 _ => "/".to_string(),
             };
-            return Ok(Some(self.create_token(TokenKind::Regex, regex_value, text, start)));
+            return Ok(Some(self.create_token(
+                TokenKind::Regex,
+                regex_value,
+                text,
+                start,
+            )));
         }
 
         if let Some(token) = self.scan_operator() {
@@ -581,17 +586,26 @@ mod tests {
     fn tokenizes_range_without_swallowing_first_dot() {
         let mut tokenizer = Tokenizer::new("1..10000");
 
-        let first = tokenizer.next(false).expect("first token").expect("first token exists");
+        let first = tokenizer
+            .next(false)
+            .expect("first token")
+            .expect("first token exists");
         assert_eq!(first.kind, TokenKind::Number);
         assert_eq!(first.value, TokenValue::Number(1.0));
         assert_eq!(first.text, "1");
 
-        let second = tokenizer.next(false).expect("second token").expect("second token exists");
+        let second = tokenizer
+            .next(false)
+            .expect("second token")
+            .expect("second token exists");
         assert_eq!(second.kind, TokenKind::Operator);
         assert_eq!(second.value, TokenValue::String("..".to_string()));
         assert_eq!(second.text, "..");
 
-        let third = tokenizer.next(false).expect("third token").expect("third token exists");
+        let third = tokenizer
+            .next(false)
+            .expect("third token")
+            .expect("third token exists");
         assert_eq!(third.kind, TokenKind::Number);
         assert_eq!(third.value, TokenValue::Number(10000.0));
         assert_eq!(third.text, "10000");

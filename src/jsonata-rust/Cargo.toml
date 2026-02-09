@@ -3,12 +3,12 @@ name = "jsonata_rust"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.78"
-description = "Async-first Rust implementation of JSONata parser and runtime building blocks"
+description = "Async-first JSONata parser/runtime crate with stable Rust API facade"
 readme = "README.md"
 license = "MIT"
 documentation = "https://docs.rs/jsonata_rust"
 homepage = "https://docs.jsonata.org/"
-repository = "https://github.com/lajasoft/async_jsonata_rust"
+repository = "https://github.com/lajasoft/async_jsonata_rs"
 keywords = ["jsonata", "json", "query", "transform", "async"]
 categories = ["parser-implementations", "asynchronous"]
 

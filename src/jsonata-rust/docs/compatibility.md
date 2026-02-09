@@ -1,30 +1,42 @@
-# Compatibility Matrix
+# JSONata Compatibility Matrix
 
-This document tracks compatibility of `jsonata_rust` against the reference JSONata engine.
+This document tracks compatibility of `jsonata_rust` against the reference `jsonata-js` engine.
 
-Reference docs:
-- <https://docs.jsonata.org/overview>
-- <https://docs.jsonata.org/path-operators>
-- <https://docs.jsonata.org/programming>
+## Reference baseline
+- Engine: `jsonata-js`
+- Version: `2.1.0`
+- Syntax docs:
+  - <https://docs.jsonata.org/overview>
+  - <https://docs.jsonata.org/path-operators>
+  - <https://docs.jsonata.org/programming>
 
-## Summary
+## Coverage matrix
 
-| Area | Status | Notes |
+| Capability | Status | Coverage source |
 |---|---|---|
-| Parser (core expression grammar) | Implemented | Tested with simple and complex nested expressions, including function blocks and `~>` chains. |
-| Rust value model (`JsonValue`/`JsonataValue`) | Implemented | Supports arrays/objects/functions and JSONata-specific sequence metadata. |
-| Builtin function registry wiring | Implemented | Includes sync and async function registration paths. |
-| Async higher-order execution (`map/filter/single/foldLeft/each/sift`) | Implemented | Covered by async callable tests including explicit `Pending -> Ready` behavior. |
-| Full JSONata evaluator parity | In Progress | Parser + functions exist; full end-to-end evaluator remains to be completed. |
-| JS bridge parity (`jsonata-js-rust/native`) | In Progress | Extensive coverage exists; some bridge compatibility shims are still present. |
+| Parser core grammar | Implemented | `tests/native_wrapper.rs`, parser module tests |
+| Function/runtime value model (`JsonValue`/`JsonataValue`) | Implemented | `types.rs` + integration tests |
+| Built-in registry wiring | Implemented | `registry.rs` + example/tests |
+| Async callables and HOF primitives (`map`, `filter`, `single`, `foldLeft`) | Implemented | async tests with explicit `Pending -> Ready` behavior |
+| Full evaluator output parity vs JSONata-js test-suite groups | In progress | stable `Evaluator` API exists, runtime parity not complete |
+| JS native bridge parity (`jsonata-js-rust/native`) | In progress | dedicated native tests + bridge layer |
 
-## Known deviations / temporary behavior
+## Test groups snapshot
 
-- Some bridge-level compatibility fields are normalized in JS wrappers for error-shape parity.
-- Full evaluator-level JSONata behavioral parity is not yet declared complete for all test-suite groups.
+| Group bucket | Status |
+|---|---|
+| Parser-focused expressions (paths, predicates, function blocks) | Covered |
+| Async function behavior | Covered |
+| Complex real-world golden expressions | Started |
+| Differential parity vs `jsonata-js` executable | Optional (env/CI gated) |
+| Full official suite pass/fail dashboard | Planned |
 
-## Validation sources used in this repo
+## Known deviations
+- `Evaluator::evaluate` currently returns `E0001` while runtime engine parity is under active development.
+- Full claim for all official `jsonata-js` test-suite groups is intentionally deferred.
+- Bridge-level error-shape shims may exist for JS interop compatibility.
 
-- JS hybrid suite (`src/jsonata-js-rust/test/run-test-suite.js`)
-- Rust integration harness (`src/jsonata-rust/tests/native_wrapper.rs`)
-- Native bridge unit tests (`src/jsonata-js-rust/native/src/lib/regex_match.rs`)
+## Validation sources in this repository
+- `src/jsonata-js-rust/test/run-test-suite.js`
+- `src/jsonata-rust/tests/native_wrapper.rs`
+- `src/jsonata-js-rust/native/src/lib/regex_match.rs`

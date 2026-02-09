@@ -1,0 +1,16 @@
+{
+  "id": "golden-complex-totals",
+  "input": {
+    "orders": [
+      {"id": "A1", "amount": 30.5, "qty": 2},
+      {"id": "B2", "amount": 10, "qty": 5},
+      {"id": "C3", "amount": 7.5, "qty": 8}
+    ]
+  },
+  "expr": "{\"count\": $count(orders), \"ids\": orders.id, \"grand\": $sum(orders.(amount * qty))}",
+  "expected": {
+    "count": 3,
+    "ids": ["A1", "B2", "C3"],
+    "grand": 171
+  }
+}
