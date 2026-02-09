@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures::executor::block_on;
 use futures::future::BoxFuture;
@@ -23,12 +24,41 @@ struct LambdaCallable {
     functions: HashMap<String, JsonFunction>,
 }
 
+const MAX_LAMBDA_CALL_DEPTH: usize = 512;
+static LAMBDA_CALL_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+struct LambdaDepthGuard;
+
+impl LambdaDepthGuard {
+    fn enter() -> std::result::Result<Self, JsonError> {
+        let depth = LAMBDA_CALL_DEPTH.fetch_add(1, Ordering::SeqCst) + 1;
+        if depth > MAX_LAMBDA_CALL_DEPTH {
+            LAMBDA_CALL_DEPTH.fetch_sub(1, Ordering::SeqCst);
+            return Err(JsonError::new(
+                "U1001",
+                "Stack overflow error: non-terminating recursive function call",
+            ));
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for LambdaDepthGuard {
+    fn drop(&mut self) {
+        LAMBDA_CALL_DEPTH.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 impl JsonCallable for LambdaCallable {
     fn call(
         &self,
         ctx: FunctionContext,
         args: Vec<JsonValue>,
     ) -> BoxFuture<'static, Result<JsonValue, JsonError>> {
+        let depth_guard = match LambdaDepthGuard::enter() {
+            Ok(guard) => guard,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
         let mut call_bindings = self.captured_bindings.clone();
         for (index, name) in self.arg_names.iter().enumerate() {
             let value = args.get(index).cloned().unwrap_or(JsonValue::Undefined);
@@ -46,6 +76,7 @@ impl JsonCallable for LambdaCallable {
         let functions = self.functions.clone();
 
         Box::pin(async move {
+            let _depth_guard = depth_guard;
             let handle = std::thread::spawn(move || {
                 let mut value = eval(&body, &captured_input, &focus, &functions, &call_bindings)?;
 
@@ -69,6 +100,9 @@ impl JsonCallable for LambdaCallable {
             })?;
 
             result.map_err(|err| {
+                if err.code() == "U1001" {
+                    return JsonError::new("U1001", err.message().to_owned());
+                }
                 JsonError::new(
                     "D3120",
                     format!("Lambda execution failed: {}: {}", err.code(), err.message()),

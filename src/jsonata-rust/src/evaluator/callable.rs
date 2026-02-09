@@ -61,6 +61,63 @@ struct RegexMatcherCallable {
     offset: usize,
 }
 
+#[derive(Clone)]
+enum PartialArg {
+    Placeholder,
+    Value(JsonValue),
+}
+
+#[derive(Clone)]
+struct PartialCallable {
+    target: JsonFunction,
+    template: Vec<PartialArg>,
+    captured_focus: JsonValue,
+}
+
+impl JsonCallable for PartialCallable {
+    fn call(
+        &self,
+        ctx: FunctionContext,
+        args: Vec<JsonValue>,
+    ) -> BoxFuture<'static, Result<JsonValue, crate::types::JsonError>> {
+        let mut consumed = 0usize;
+        let mut merged = Vec::with_capacity(self.template.len() + args.len());
+        for slot in &self.template {
+            match slot {
+                PartialArg::Placeholder => {
+                    merged.push(args.get(consumed).cloned().unwrap_or(JsonValue::Undefined));
+                    consumed += 1;
+                }
+                PartialArg::Value(value) => merged.push(value.clone()),
+            }
+        }
+        while consumed < args.len() {
+            merged.push(args[consumed].clone());
+            consumed += 1;
+        }
+
+        let focus = ctx
+            .focus()
+            .map(|focus| focus.input.clone())
+            .unwrap_or_else(|| self.captured_focus.clone());
+        let call_ctx = FunctionContext::with_focus(JsonataFocus::new(focus));
+        self.target.call(call_ctx, merged)
+    }
+
+    fn arity(&self) -> Option<usize> {
+        Some(
+            self.template
+                .iter()
+                .filter(|arg| matches!(arg, PartialArg::Placeholder))
+                .count(),
+        )
+    }
+
+    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+        self
+    }
+}
+
 impl RegexMatcherCallable {
     fn root(regex: Arc<Regex>) -> Self {
         Self {
@@ -140,7 +197,7 @@ fn build_regex_match_value(regex: Arc<Regex>, input: String, offset: usize) -> J
     JsonValue::Object(JsonObject(vec![
         ("match".to_owned(), JsonValue::String(match_text)),
         ("start".to_owned(), JsonValue::Number(match_start as f64)),
-        ("end".to_owned(), JsonValue::Number((match_end - 1) as f64)),
+        ("end".to_owned(), JsonValue::Number(match_end as f64)),
         (
             "groups".to_owned(),
             JsonValue::Array(JsonArray::new(groups, false, false)),
@@ -249,21 +306,18 @@ pub(super) fn eval_function(
     match block_on(callable.call(ctx, args)) {
         Ok(value) => Ok(value),
         Err(err) => {
-            if err.code == "J9001" {
-                let mut details = err.message.clone();
-                if let Some(position) = node.get("position").and_then(Value::as_i64) {
-                    details.push_str(format!(";position:{position}").as_str());
-                }
-                if let Some(token) = procedure
-                    .get("value")
-                    .and_then(Value::as_str)
-                    .or_else(|| procedure.get("token").and_then(Value::as_str))
-                {
-                    details.push_str(format!(";token:{token}").as_str());
-                }
-                return Err(Error::new(err.code, details));
+            let mut details = err.message.clone();
+            if let Some(position) = node.get("position").and_then(Value::as_i64) {
+                details.push_str(format!(";position:{position}").as_str());
             }
-            Err(Error::from(err))
+            if let Some(token) = procedure
+                .get("value")
+                .and_then(Value::as_str)
+                .or_else(|| procedure.get("token").and_then(Value::as_str))
+            {
+                details.push_str(format!(";token:{token}").as_str());
+            }
+            Err(Error::new(err.code, details))
         }
     }
 }
@@ -450,4 +504,40 @@ pub(super) fn eval_apply(
         }
         _ => Err(Error::new("T1006", "Right side of apply is not callable")),
     }
+}
+
+pub(super) fn eval_partial(
+    node: &Value,
+    input: &JsonValue,
+    focus: &JsonValue,
+    functions: &HashMap<String, JsonFunction>,
+    bindings: &Bindings,
+) -> Result<JsonValue, Error> {
+    let procedure = node
+        .get("procedure")
+        .ok_or_else(|| Error::new("E2033", "Partial node missing procedure"))?;
+    let target = resolve_callable(procedure, input, focus, functions, bindings)?;
+    let arguments = node
+        .get("arguments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::new("E2034", "Partial node missing arguments"))?;
+
+    let mut template = Vec::with_capacity(arguments.len());
+    for arg in arguments {
+        let is_placeholder = arg.get("type").and_then(Value::as_str) == Some("operator")
+            && arg.get("value").and_then(Value::as_str) == Some("?");
+        if is_placeholder {
+            template.push(PartialArg::Placeholder);
+            continue;
+        }
+        template.push(PartialArg::Value(eval(arg, input, focus, functions, bindings)?));
+    }
+
+    Ok(JsonValue::Function(JsonFunction::new(Arc::new(
+        PartialCallable {
+            target,
+            template,
+            captured_focus: focus.clone(),
+        },
+    ))))
 }

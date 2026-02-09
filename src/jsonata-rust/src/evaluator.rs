@@ -101,6 +101,7 @@ pub(super) fn eval(
         "function" => callable::eval_function(node, input, focus, functions, bindings),
         "binary" => ops::eval_binary(node, input, focus, functions, bindings),
         "apply" => callable::eval_apply(node, input, focus, functions, bindings),
+        "partial" => callable::eval_partial(node, input, focus, functions, bindings),
         "block" => expressions::eval_block(node, input, focus, functions, bindings),
         "unary" => expressions::eval_unary(node, input, focus, functions, bindings),
         "bind" => {

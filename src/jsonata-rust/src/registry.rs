@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use time::{OffsetDateTime, UtcOffset};
 
-use crate::functions::{core, math, strings};
+use crate::functions::{core, math, regex, strings};
 use crate::types::{FunctionContext, JsonCallable, JsonError, JsonFunction, JsonObject, JsonValue};
 
 /// Convert JsonValue to Option<f64> for math functions
@@ -438,6 +438,15 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     );
 
     registry.insert(
+        "each".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::async_fn(Some(2), |ctx, args| {
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let func = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
+            Box::pin(core::each(ctx, input, func))
+        }))),
+    );
+
+    registry.insert(
         "sift".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::async_fn(Some(2), |ctx, args| {
             let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
@@ -539,25 +548,56 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
 
     registry.insert(
         "contains".to_string(),
-        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(2), |args| {
-            let source = args.first().cloned().unwrap_or(JsonValue::Undefined);
+        JsonFunction::new(Arc::new(BuiltinCallable::async_fn(Some(2), |ctx, args| {
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
             let token = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
-            match (source, token) {
-                (JsonValue::String(source), JsonValue::String(token)) => {
-                    Ok(JsonValue::Bool(source.contains(token.as_str())))
-                }
-                (JsonValue::Array(array), JsonValue::String(token)) => {
-                    for item in array.elements {
-                        if let JsonValue::String(text) = item {
-                            if text.contains(token.as_str()) {
-                                return Ok(JsonValue::Bool(true));
-                            }
-                        }
-                    }
-                    Ok(JsonValue::Bool(false))
-                }
-                _ => Ok(JsonValue::Bool(false)),
-            }
+            Box::pin(regex::contains_function(ctx, input, token))
+        }))),
+    );
+
+    registry.insert(
+        "match".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::async_fn(Some(3), |ctx, args| {
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let matcher = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
+            let limit = args.get(2).cloned().unwrap_or(JsonValue::Undefined);
+            Box::pin(regex::match_function(ctx, input, matcher, limit))
+        }))),
+    );
+
+    registry.insert(
+        "split".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::async_fn(Some(3), |ctx, args| {
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let separator = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
+            let limit = args.get(2).cloned().unwrap_or(JsonValue::Undefined);
+            Box::pin(regex::split_function(ctx, input, separator, limit))
+        }))),
+    );
+
+    registry.insert(
+        "replace".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::async_fn(Some(4), |ctx, args| {
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let pattern = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
+            let replacement = args.get(2).cloned().unwrap_or(JsonValue::Undefined);
+            let limit = args.get(3).cloned().unwrap_or(JsonValue::Undefined);
+            Box::pin(regex::replace_function(
+                ctx,
+                input,
+                pattern,
+                replacement,
+                limit,
+            ))
+        }))),
+    );
+
+    registry.insert(
+        "join".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(2), |args| {
+            let values = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let separator = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
+            regex::join_function(values, separator)
         }))),
     );
 

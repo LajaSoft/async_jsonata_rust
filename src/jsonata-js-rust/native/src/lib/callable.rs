@@ -214,6 +214,13 @@ impl JsonCallable for JsFunctionCallable {
                 match result {
                     Ok(raw) => {
                         let value = unsafe { JsUnknown::from_raw_unchecked(env.raw(), raw.0) };
+                        let value = match unwrap_iterable_result(&env, value) {
+                            Ok(unwrapped) => unwrapped,
+                            Err(err) => {
+                                callback_sender.send(Err(napi_error_to_json("JS", err)));
+                                return Ok(());
+                            }
+                        };
                         match value.is_promise() {
                             Ok(true) => {
                                 if let Err(err) =
@@ -268,6 +275,35 @@ impl JsonCallable for JsFunctionCallable {
     fn as_any(&self) -> &(dyn Any + Send + Sync) {
         self
     }
+}
+
+fn unwrap_iterable_result<'env>(_env: &'env Env, value: JsUnknown<'env>) -> napi::Result<JsUnknown<'env>> {
+    if value.get_type()? != ValueType::Object {
+        return Ok(value);
+    }
+
+    let object = value.coerce_to_object()?;
+    // Matcher callback objects also expose `next`; do not consume them as iterators.
+    if object.has_named_property("match")? && object.has_named_property("groups")? {
+        return Ok(value);
+    }
+    if !object.has_named_property("next")? {
+        return Ok(value);
+    }
+    let next_value: JsUnknown = object.get_named_property("next")?;
+    if next_value.get_type()? != ValueType::Function {
+        return Ok(value);
+    }
+    let next_fn = JsFunction::try_from_unknown(next_value)?;
+    let iter_result = JsFunctionExt::call(&next_fn, Some(&object), &[])?;
+    if iter_result.get_type()? != ValueType::Object {
+        return Ok(iter_result);
+    }
+    let iter_object = iter_result.coerce_to_object()?;
+    if !iter_object.has_named_property("value")? {
+        return Ok(iter_result);
+    }
+    iter_object.get_named_property("value")
 }
 
 fn preserve_foreign_exception(

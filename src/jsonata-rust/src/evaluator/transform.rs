@@ -36,6 +36,13 @@ pub(super) fn eval_transform_apply(
     let pattern = transform
         .get("pattern")
         .ok_or_else(|| Error::new("T2010", "Transform expression missing pattern"))?;
+    if ast_contains_prototype_pollution_access(pattern) {
+        let mut message = "Attempted to access the Javascript object prototype".to_owned();
+        if let Some(position) = transform.get("position").and_then(Value::as_i64) {
+            message.push_str(format!(";position:{position}").as_str());
+        }
+        return Err(Error::new("D1010", message));
+    }
     let update = transform
         .get("update")
         .ok_or_else(|| Error::new("T2011", "Transform expression missing update clause"))?;
@@ -85,6 +92,30 @@ pub(super) fn eval_transform_apply(
     }
 
     Ok(apply_transform_ops(&target_base, &ops))
+}
+
+fn ast_contains_prototype_pollution_access(node: &Value) -> bool {
+    let Some(object) = node.as_object() else {
+        if let Some(array) = node.as_array() {
+            return array.iter().any(ast_contains_prototype_pollution_access);
+        }
+        return false;
+    };
+
+    if let Some(Value::String(node_type)) = object.get("type") {
+        if (node_type == "name" || node_type == "variable" || node_type == "path")
+            && matches!(
+                object.get("value").and_then(Value::as_str),
+                Some("__proto__") | Some("__lookupGetter__") | Some("constructor")
+            )
+        {
+            return true;
+        }
+    }
+
+    object
+        .values()
+        .any(ast_contains_prototype_pollution_access)
 }
 
 #[derive(Clone)]

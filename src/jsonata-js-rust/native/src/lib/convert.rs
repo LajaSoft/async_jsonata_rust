@@ -207,6 +207,9 @@ pub(crate) fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUn
         JsonValue::Object(JsonObject(entries)) => {
             let mut js_object = Object::new(env)?;
             for (key, entry_value) in entries {
+                if matches!(entry_value, JsonValue::Function(_)) {
+                    continue;
+                }
                 let js_value = json_value_to_js(env, entry_value)?;
                 js_object.set_named_property(&key, js_value)?;
             }
@@ -252,10 +255,23 @@ pub(crate) fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUn
                 let js_func = js_callable.to_js_function(env)?;
                 return js_func.into_unknown(env);
             }
-            Err(Error::new(
-                Status::InvalidArg,
-                "Cannot convert function value to JavaScript",
-            ))
+            let rust_function = function.clone();
+            let proxy = env.create_function_from_closure::<(), sys::napi_value, _>(
+                "jsonataRustFunctionAdapter",
+                move |ctx| {
+                    let mut args = Vec::with_capacity(ctx.length());
+                    for index in 0..ctx.length() {
+                        let arg: JsUnknown = ctx.get(index)?;
+                        args.push(js_unknown_to_json_value(ctx.env, arg)?);
+                    }
+                    let value = futures::executor::block_on(
+                        rust_function.call(FunctionContext::empty(), args),
+                    )
+                    .map_err(json_error_to_napi)?;
+                    map_unknown(json_value_to_js(ctx.env, value))
+                },
+            )?;
+            proxy.into_unknown(env)
         }
     }
 }

@@ -86,6 +86,10 @@
             err.code = prefixedMatch[1];
             err.message = prefixedMatch[2];
         }
+        const genericPrefixMatch = /^JS:\s*GenericFailure,\s*(.*)$/.exec(err.message);
+        if (genericPrefixMatch) {
+            err.message = genericPrefixMatch[1];
+        }
 
         if (err.code === 'D3140') {
             if (context && typeof context.name === 'string' && context.name.length > 0) {
@@ -113,6 +117,8 @@
         // TEMP: Bridge compatibility metadata for Rust `$match` until full native regex parity lands.
         if (err.code === 'D3040') {
             err.index = 3;
+            err.position = 7;
+            err.token = 'match';
             if (
                 context &&
                 Array.isArray(context.args) &&
