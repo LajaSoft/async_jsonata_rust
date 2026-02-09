@@ -18,6 +18,7 @@ struct LambdaCallable {
     arg_names: Vec<String>,
     body: Value,
     body_is_thunk: bool,
+    recursive_name: Option<String>,
     captured_input: JsonValue,
     captured_focus: JsonValue,
     captured_bindings: Bindings,
@@ -60,6 +61,11 @@ impl JsonCallable for LambdaCallable {
             Err(err) => return Box::pin(async move { Err(err) }),
         };
         let mut call_bindings = self.captured_bindings.clone();
+        if let Some(name) = &self.recursive_name {
+            let self_value = JsonValue::Function(JsonFunction::new(Arc::new(self.clone())));
+            call_bindings.insert(name.clone(), self_value.clone());
+            call_bindings.insert(format!("${name}"), self_value);
+        }
         for (index, name) in self.arg_names.iter().enumerate() {
             let value = args.get(index).cloned().unwrap_or(JsonValue::Undefined);
             call_bindings.insert(name.clone(), value.clone());
@@ -149,6 +155,7 @@ pub(super) fn eval_lambda(
         arg_names,
         body,
         body_is_thunk,
+        recursive_name: None,
         captured_input: input.clone(),
         captured_focus: focus.clone(),
         captured_bindings: bindings.clone(),
@@ -156,6 +163,18 @@ pub(super) fn eval_lambda(
     };
 
     Ok(JsonValue::Function(JsonFunction::new(Arc::new(callable))))
+}
+
+pub(super) fn bind_recursive_name(function: &JsonFunction, name: &str) -> Option<JsonFunction> {
+    let lambda = function
+        .as_callable()
+        .as_any()
+        .downcast_ref::<LambdaCallable>()?;
+
+    let mut rebound = lambda.clone();
+    rebound.recursive_name = Some(name.to_owned());
+
+    Some(JsonFunction::new(Arc::new(rebound)))
 }
 
 fn extract_lambda_arg_name(arg: &Value) -> Option<String> {

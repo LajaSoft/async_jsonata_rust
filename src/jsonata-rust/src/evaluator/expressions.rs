@@ -5,6 +5,7 @@ use serde_json::Value;
 use crate::error::Error;
 use crate::types::{JsonArray, JsonFunction, JsonObject, JsonValue};
 
+use super::lambda;
 use super::ops::to_number;
 use super::value::{materialize_value, object_keys_from_value, upsert_object_property};
 use super::{eval, Bindings};
@@ -25,7 +26,12 @@ pub(super) fn eval_block(
     let mut last = JsonValue::Undefined;
     for expr in expressions {
         if expr.get("type").and_then(Value::as_str) == Some("bind") {
-            let (name, value) = eval_bind(expr, input, focus, functions, &local_bindings)?;
+            let (name, mut value) = eval_bind(expr, input, focus, functions, &local_bindings)?;
+            if let JsonValue::Function(function) = &value {
+                if let Some(rebound) = lambda::bind_recursive_name(function, &name) {
+                    value = JsonValue::Function(rebound);
+                }
+            }
             local_bindings.insert(name.clone(), value.clone());
             local_bindings.insert(format!("${name}"), value.clone());
             last = value;

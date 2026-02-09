@@ -28,6 +28,23 @@ pub(super) fn eval_binary(
         .ok_or_else(|| Error::new("E2013", "Binary node missing rhs"))?;
 
     let left = eval(lhs, input, focus, functions, bindings)?;
+
+    if op == "and" {
+        if !is_truthy(&left) {
+            return Ok(JsonValue::Bool(false));
+        }
+        let right = eval(rhs, input, focus, functions, bindings)?;
+        return Ok(JsonValue::Bool(is_truthy(&right)));
+    }
+
+    if op == "or" {
+        if is_truthy(&left) {
+            return Ok(JsonValue::Bool(true));
+        }
+        let right = eval(rhs, input, focus, functions, bindings)?;
+        return Ok(JsonValue::Bool(is_truthy(&right)));
+    }
+
     let right = eval(rhs, input, focus, functions, bindings)?;
 
     match op {
@@ -44,8 +61,7 @@ pub(super) fn eval_binary(
         ">=" => compare_values(&left, &right, "T2010", |o| o.is_gt() || o.is_eq()),
         "<" => compare_values(&left, &right, "T2009", |o| o.is_lt()),
         "<=" => compare_values(&left, &right, "T2010", |o| o.is_lt() || o.is_eq()),
-        "and" => Ok(JsonValue::Bool(is_truthy(&left) && is_truthy(&right))),
-        "or" => Ok(JsonValue::Bool(is_truthy(&left) || is_truthy(&right))),
+        "and" | "or" => Err(Error::new("E2014", "Logical operator dispatch failure")),
         _ => Err(Error::new(
             "E2014",
             format!("Unsupported binary operator: {op}"),

@@ -1,9 +1,10 @@
+NO NEW FALLBACKS TO JS CODE ALLOWED WITHOUT EXPLICIT REQUEST FROM USER. THIS IS FIRST PRIORITY RULE!!!!!!.
 # async_jsonata_rs :: Agent Playbook
 
 
 ### FALLBACKS
 
-NO NEW FALLBACKS ALLOWED WITHOUT EXPLICIT REQUEST FROM USER.
+NO NEW FALLBACKS TO JS CODE ALLOWED WITHOUT EXPLICIT REQUEST FROM USER. THIS IS FIRST PRIORITY RULE!!!!!!.
 
 ## Mission
 Rebuild the full JSONata reference implementation in Rust while preserving behavioural parity with the upstream JavaScript project. Use the official JSONata conformance suite as the oracle, replacing the JS internals from the bottom up with native Rust components until the entire stack is Rust-driven.
@@ -130,3 +131,4 @@ docker compose run --rm   -e DOCKER_CONFIG=/workspace/.docker   --workdir /works
     ./node_modules/.bin/mocha --require ./scripts/skip-user-defined-functions.js "test/**/*.js" --reporter json > /tmp/mocha.json || true
     node -e '"'"'const r=require("/tmp/mocha.json"); console.log("failures:", r.stats.failures); (r.failures||[]).forEach((f,i)=>console.log((i+1)+". "+f.fullTitle));'"'"'
   '
+NO NEW FALLBACKS TO JS CODE ALLOWED WITHOUT EXPLICIT REQUEST FROM USER. THIS IS FIRST PRIORITY RULE!!!!!!!!.

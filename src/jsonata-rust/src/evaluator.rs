@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::error::Error;
 use crate::functions::core;
-use crate::types::{JsonFunction, JsonValue};
+use crate::types::{JsonArray, JsonFunction, JsonValue};
 
 mod callable;
 mod expressions;
@@ -129,6 +129,19 @@ pub(super) fn eval(
         if let Some(group) = node.get("group") {
             result = path::apply_group_expression(group, input, &result, functions, bindings)?;
         }
+    }
+
+    if node_type == "path"
+        && node
+            .get("keepSingletonArray")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return match result {
+            JsonValue::Undefined => Ok(JsonValue::Undefined),
+            JsonValue::Array(array) if array.is_sequence => Ok(JsonValue::Array(array)),
+            other => Ok(JsonValue::Array(JsonArray::new(vec![other], true, false))),
+        };
     }
 
     Ok(ops::normalize_sequence(result))

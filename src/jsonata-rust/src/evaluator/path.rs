@@ -276,17 +276,20 @@ fn numeric_index(value: Option<&Value>) -> Option<i64> {
 }
 
 fn apply_index(current: &JsonValue, index: &Value) -> JsonValue {
-    let Some(idx) = index.as_i64() else {
+    let Some(idx) = numeric_index(Some(index)) else {
         return JsonValue::Undefined;
     };
 
-    let seq = to_sequence(current);
-    if seq.is_empty() {
+    let items: Vec<JsonValue> = match current {
+        JsonValue::Array(array) if !array.is_sequence => array.elements.clone(),
+        _ => to_sequence(current),
+    };
+    if items.is_empty() {
         return JsonValue::Undefined;
     }
 
     let position = if idx < 0 {
-        let from_end = seq.len() as i64 + idx;
+        let from_end = items.len() as i64 + idx;
         if from_end < 0 {
             return JsonValue::Undefined;
         }
@@ -295,7 +298,10 @@ fn apply_index(current: &JsonValue, index: &Value) -> JsonValue {
         idx as usize
     };
 
-    seq.get(position).cloned().unwrap_or(JsonValue::Undefined)
+    items
+        .get(position)
+        .cloned()
+        .unwrap_or(JsonValue::Undefined)
 }
 
 fn apply_sort_step(
