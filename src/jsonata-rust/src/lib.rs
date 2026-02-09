@@ -85,6 +85,7 @@
 
 pub mod api;
 pub mod error;
+mod evaluator;
 pub mod functions;
 pub mod parser;
 pub mod registry;

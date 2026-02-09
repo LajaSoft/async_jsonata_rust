@@ -5,13 +5,14 @@ use std::task::Poll;
 
 use futures::executor::block_on;
 use futures::future::BoxFuture;
+use async_jsonata_rust::Evaluator;
 use async_jsonata_rust::functions::{core, math, strings};
 use async_jsonata_rust::parser;
 use async_jsonata_rust::types::{
     FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction, JsonValue, JsonataArray,
     JsonataValue,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 #[derive(Clone)]
 struct DoubleCallable;
@@ -126,14 +127,48 @@ fn parser_reports_syntax_error() {
 
 #[test]
 fn parser_accepts_complex_everything_expression() {
-    let ast = parser::parse_expression(COMPLEX_ALL_IN_EXPR, false)
-        .expect("complex expression should be parsed");
-    assert!(ast.is_object());
-    assert!(ast.get("type").is_some());
+    let evaluator = Evaluator::with_builtins();
+    let expression = evaluator
+        .parse(COMPLEX_ALL_IN_EXPR)
+        .expect("complex expression should parse");
 
-    // Golden expected output from reference JSONata engine.
-    // This is stored as an explicit fixture so we can use it once Rust evaluation lands.
-    let expected = json!({
+    let input = json_to_json_value(&json!({
+      "orders": [
+        {
+          "id": "A1",
+          "testkey": 1,
+          "customer": "alice",
+          "items": [
+            {"sku": "p1", "price": 10, "qty": 2},
+            {"sku": "p2", "price": 5, "qty": 2}
+          ]
+        },
+        {
+          "id": "B2",
+          "testkey": 0,
+          "customer": "bob",
+          "items": [
+            {"sku": "p3", "price": 100, "qty": 0}
+          ]
+        },
+        {
+          "id": "C3",
+          "testkey": 1,
+          "customer": "carol",
+          "items": [
+            {"sku": "p4", "price": 8, "qty": 3},
+            {"sku": "p5", "price": 50, "qty": 2}
+          ]
+        }
+      ],
+      "accounts": {
+        "eu-west": {"name": "EU West"},
+        "eu-east": {"name": "EU East"},
+        "us-east": {"name": "US East"}
+      }
+    }));
+
+    let expected = json_to_json_value(&json!({
       "selectedCount": 2,
       "idsViaChain": ["A1", "C3"],
       "mapped": [
@@ -166,10 +201,84 @@ fn parser_accepts_complex_everything_expression() {
           "bucket": "big"
         }
       ]
-    });
-    assert_eq!(expected["selectedCount"], 2);
-    assert_eq!(expected["grandTotal"], 154);
-    assert_eq!(expected["nestedProjection"][1]["bucket"], "big");
+    }));
+
+    let actual = evaluator
+        .evaluate(&expression, &input)
+        .expect("complex expression must evaluate to expected json");
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn evaluator_must_execute_expression_end_to_end() {
+    let evaluator = Evaluator::with_builtins();
+    let expression = evaluator
+        .parse("Account.Order[0].Product")
+        .expect("expression should parse");
+    let input = JsonValue::Object(async_jsonata_rust::JsonObject(vec![(
+        "Account".to_string(),
+        JsonValue::Object(async_jsonata_rust::JsonObject(vec![(
+            "Order".to_string(),
+            JsonValue::Array(JsonArray::new(
+                vec![JsonValue::Object(async_jsonata_rust::JsonObject(vec![(
+                    "Product".to_string(),
+                    JsonValue::String("Widget".to_string()),
+                )]))],
+                false,
+                false,
+            )),
+        )])),
+    )]));
+
+    let result = evaluator.evaluate(&expression, &input);
+    assert!(
+        result.is_ok(),
+        "Evaluator::evaluate must work end-to-end, got: {result:?}"
+    );
+}
+
+#[test]
+fn evaluator_async_end_to_end_map_with_lambda() {
+    let evaluator = Evaluator::with_builtins();
+    let expression = evaluator
+        .parse("$map([1,2,3], function($x){$x * 2})")
+        .expect("expression should parse");
+
+    let result = evaluator
+        .evaluate(&expression, &JsonValue::Null)
+        .expect("Evaluator must execute async map end-to-end");
+
+    assert_eq!(
+        result,
+        JsonValue::Array(JsonArray::new(
+            vec![
+                JsonValue::Number(2.0),
+                JsonValue::Number(4.0),
+                JsonValue::Number(6.0),
+            ],
+            true,
+            false,
+        ))
+    );
+}
+
+fn json_to_json_value(value: &Value) -> JsonValue {
+    match value {
+        Value::Null => JsonValue::Null,
+        Value::Bool(flag) => JsonValue::Bool(*flag),
+        Value::Number(number) => JsonValue::Number(number.as_f64().unwrap_or(0.0)),
+        Value::String(text) => JsonValue::String(text.clone()),
+        Value::Array(items) => JsonValue::Array(JsonArray::new(
+            items.iter().map(json_to_json_value).collect(),
+            false,
+            false,
+        )),
+        Value::Object(map) => JsonValue::Object(async_jsonata_rust::JsonObject(
+            map.iter()
+                .map(|(key, item)| (key.clone(), json_to_json_value(item)))
+                .collect(),
+        )),
+    }
 }
 
 #[test]

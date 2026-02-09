@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::error::Error;
+use crate::evaluator;
 use crate::parser;
 use crate::registry;
 use crate::types::{JsonFunction, JsonValue};
@@ -266,7 +267,7 @@ impl FunctionRegistry {
 /// let evaluator = async_jsonata_rust::Evaluator::with_builtins();
 /// let expression = evaluator.parse("1")?;
 /// let result = evaluator.evaluate(&expression, &async_jsonata_rust::JsonValue::Null);
-/// assert!(result.is_err());
+/// assert_eq!(result?, async_jsonata_rust::JsonValue::Number(1.0));
 /// # Ok::<(), async_jsonata_rust::Error>(())
 /// ```
 #[derive(Clone, Default)]
@@ -317,18 +318,16 @@ impl Evaluator {
     /// let evaluator = async_jsonata_rust::Evaluator::with_builtins();
     /// let expression = evaluator.parse("1")?;
     /// let out = evaluator.evaluate(&expression, &async_jsonata_rust::JsonValue::Null);
-    /// assert!(out.is_err());
+    /// assert_eq!(out?, async_jsonata_rust::JsonValue::Number(1.0));
     /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
     pub fn evaluate(
         &self,
         expression: &Expression,
-        _input: &JsonValue,
+        input: &JsonValue,
     ) -> Result<JsonValue, Error> {
-        let details = Value::String(expression.source().to_owned());
-        let _ = &self.functions;
-        Err(Error::not_implemented("Evaluator runtime is in progress")
-            .with_context("expression", details))
+        evaluator::evaluate_expression(expression.ast(), input, self.functions.as_map())
+            .map_err(|err| err.with_context("expression", Value::String(expression.source().to_owned())))
     }
 
     /// Returns evaluator function registry.

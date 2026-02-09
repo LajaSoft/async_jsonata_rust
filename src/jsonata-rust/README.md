@@ -1,14 +1,14 @@
 # async_jsonata_rust
 
-Async-first Rust crate for JSONata parser/runtime foundations.
+Async-first JSONata library for Rust: parser, runtime primitives, async custom functions, and stable product-facing API.
 
 ## Crate contract
 
 ### Scope
 - `parser`: JSONata expression parsing into AST JSON (`serde_json::Value`), including recover mode.
-- `evaluator`: stable facade exists (`Evaluator`), full runtime parity is in progress.
-- `async custom functions`: supported through `JsonCallable`/`JsonataCallable` traits and async core operators (`map`, `filter`, `single`, `foldLeft`).
-- `compatibility level`: parser and function runtime primitives are production-oriented; evaluator parity is explicitly tracked as in-progress.
+- `evaluator`: stable API exists (`Evaluator`), full runtime parity is in progress.
+- `async custom functions`: supported through `JsonCallable`/`JsonataCallable` and async operators (`map`, `filter`, `single`, `foldLeft`).
+- `compatibility level`: parser + runtime primitives are production-oriented, full end-to-end evaluator parity is tracked explicitly.
 
 ### Stable entry points
 - `Parser`
@@ -17,9 +17,7 @@ Async-first Rust crate for JSONata parser/runtime foundations.
 - `FunctionRegistry`
 - `Error`
 
-Low-level internals are still available under `parser::*`, but product API should use the stable layer above.
-
-## Quick start
+## Quick start (parse)
 
 ```rust
 use async_jsonata_rust::Parser;
@@ -30,7 +28,39 @@ println!("AST kind: {}", expr.ast()["type"]);
 # Ok::<(), async_jsonata_rust::Error>(())
 ```
 
-## JSONata references
+## Evaluation example (what works now)
+
+```rust
+use async_jsonata_rust::types::{FunctionContext, JsonValue};
+use async_jsonata_rust::{Evaluator, FunctionRegistry};
+use futures::executor::block_on;
+
+let evaluator = Evaluator::with_builtins();
+let expr = evaluator.parse("$sqrt(81)")?;
+
+// Stable evaluator API is available, runtime parity is still in progress.
+let eval_status = evaluator.evaluate(&expr, &JsonValue::Null).unwrap_err();
+assert_eq!(eval_status.code(), "E0001");
+
+// Runtime primitives already execute built-ins and async custom functions.
+let registry = FunctionRegistry::with_builtins();
+let sqrt = registry.get("sqrt").unwrap().clone();
+let value = block_on(sqrt.call(FunctionContext::empty(), vec![JsonValue::Number(81.0)]))?;
+assert_eq!(value, JsonValue::Number(9.0));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Runnable examples:
+- `examples/basic_eval.rs`
+- `examples/async_function.rs`
+- `examples/custom_registry.rs`
+- `examples/error_handling.rs`
+
+## Docs and links
+- Crate docs on `docs.rs` will appear after first publish.
+- Current source docs live in this repo under `src/jsonata-rust/`.
+
+JSONata references:
 - <https://docs.jsonata.org/overview>
 - <https://docs.jsonata.org/path-operators>
 - <https://docs.jsonata.org/programming>
@@ -46,35 +76,22 @@ Reference engine: `jsonata-js` `2.1.0`.
 | Async function execution (`Pending -> Ready`) | High | async callable tests in `tests/native_wrapper.rs` |
 | Full evaluator output parity across all suite groups | In progress | evaluator facade exists, runtime engine not finalized |
 
-Detailed matrix and notes: `docs/compatibility.md`.
+Detailed matrix: `docs/compatibility.md`.
 
 ## Known deviations
-- Full end-to-end evaluator parity with `jsonata-js` is not claimed yet.
-- Stable `Evaluator::evaluate` currently returns explicit `E0001` (`not implemented`) until runtime parity lands.
+- Full evaluator parity with `jsonata-js` is not claimed yet.
+- `Evaluator::evaluate` currently returns `E0001` until runtime parity lands.
 - Some bridge-focused compatibility shims remain in `jsonata-js-rust/native`.
 
-## MSRV policy
+## MSRV
 - `rust-version = 1.78`.
-- MSRV is checked in CI and treated as part of release quality.
-- MSRV bumps are allowed only in minor/major releases and documented in `CHANGELOG.md`.
+- MSRV bumps are done only in minor/major releases and logged in `CHANGELOG.md`.
 
-## SemVer policy
-- Public API: `Parser`, `Expression`, `Evaluator`, `FunctionRegistry`, `Error`, public modules, and documented behavior.
-- Breaking change examples: removing/renaming public items, changing documented error codes/fields, altering stable semantics.
-- Internal modules and undocumented internals are not covered by stability guarantees.
-
-## QA / CI gates
+## QA gates
 - `cargo fmt --all --check`
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test --all-targets --all-features`
 - `cargo test --doc --all-features`
-- Cross-platform matrix: Linux, macOS, Windows
-
-## Examples
-- `examples/basic_eval.rs`
-- `examples/async_function.rs`
-- `examples/custom_registry.rs`
-- `examples/error_handling.rs`
 
 ## Roadmap
 
