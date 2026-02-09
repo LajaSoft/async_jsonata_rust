@@ -24,6 +24,8 @@ futures = "0.3"
 ryu = "1.0"
 base64 = "0.22"
 percent-encoding = "2.3"
+time = { version = "0.3", features = ["std"] }
+regex = "1.11"
 
 [package.metadata.docs.rs]
 all-features = true

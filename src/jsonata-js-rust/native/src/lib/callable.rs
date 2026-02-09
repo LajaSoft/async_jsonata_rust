@@ -233,7 +233,10 @@ impl JsonCallable for JsFunctionCallable {
                         }
                     }
                     Err(err) => {
-                        callback_sender.send(Err(napi_error_to_json("JS", err)));
+                        match preserve_foreign_exception(&env, err) {
+                            Ok(foreign) => callback_sender.send(Err(foreign)),
+                            Err(err) => callback_sender.send(Err(napi_error_to_json("JS", err))),
+                        };
                     }
                 };
                 Ok(())
@@ -265,6 +268,120 @@ impl JsonCallable for JsFunctionCallable {
     fn as_any(&self) -> &(dyn Any + Send + Sync) {
         self
     }
+}
+
+fn preserve_foreign_exception(
+    env: &Env,
+    err: napi::Error,
+) -> std::result::Result<JsonError, napi::Error> {
+    if let Some(marker) = parse_thrownjs_marker(&err.reason) {
+        return Ok(JsonError::new("J9001", marker));
+    }
+
+    let pending_like = err.status == Status::PendingException || err.reason.contains("PendingException");
+    if !pending_like {
+        return Err(err);
+    }
+
+    let mut unknown: Option<JsUnknown> = None;
+    let mut exception = std::ptr::null_mut();
+    let status = unsafe { sys::napi_get_and_clear_last_exception(env.raw(), &mut exception) };
+    if status == sys::Status::napi_ok && !exception.is_null() {
+        if let Ok(id) = store_thrown_error_raw(env, exception) {
+            return Ok(JsonError::new("J9001", format!("THROWN:{id}")));
+        }
+        unknown = Some(unsafe { JsUnknown::from_raw_unchecked(env.raw(), exception) });
+    }
+    if unknown.is_none() {
+        let js_error = napi::JsError::from(err);
+        unknown = Some(js_error.into_unknown(*env));
+    }
+
+    let Some(unknown) = unknown else {
+        return Err(napi::Error::new(
+            Status::GenericFailure,
+            "Failed to preserve foreign JavaScript exception",
+        ));
+    };
+
+    if let Some(marker) = extract_js_foreign_marker(&unknown) {
+        return Ok(JsonError::new("J9001", marker));
+    }
+
+    let id = store_thrown_error(env, unknown).map_err(|store_err| {
+        napi::Error::new(
+            Status::GenericFailure,
+            format!(
+                "Failed to store foreign JavaScript exception for passthrough: status={:?}, reason={}",
+                store_err.status,
+                store_err.reason
+            ),
+        )
+    })?;
+    Ok(JsonError::new("J9001", format!("THROWN:{id}")))
+}
+
+fn extract_js_foreign_marker(value: &JsUnknown) -> Option<String> {
+    if matches!(value.get_type().ok()?, ValueType::String) {
+        let text = value
+            .coerce_to_string()
+            .ok()?
+            .into_utf8()
+            .ok()?
+            .as_str()
+            .ok()?
+            .to_owned();
+        return parse_thrownjs_marker(&text);
+    }
+
+    let object = value.coerce_to_object().ok()?;
+    if !object.has_named_property("message").ok()? {
+        return None;
+    }
+
+    if object.has_named_property("code").ok()? {
+        let code_value: JsUnknown = object.get_named_property("code").ok()?;
+        let code = code_value
+            .coerce_to_string()
+            .ok()?
+            .into_utf8()
+            .ok()?
+            .as_str()
+            .ok()?
+            .to_owned();
+        if !code.is_empty() && code != "J9001" {
+            return None;
+        }
+    }
+
+    let message_value: JsUnknown = object.get_named_property("message").ok()?;
+    let message = message_value
+        .coerce_to_string()
+        .ok()?
+        .into_utf8()
+        .ok()?
+        .as_str()
+        .ok()?
+        .to_owned();
+    if !message.starts_with("THROWNJS:") {
+        return None;
+    }
+
+    Some(message)
+}
+
+fn parse_thrownjs_marker(text: &str) -> Option<String> {
+    let index = text.find("THROWNJS:")?;
+    let suffix = &text[index..];
+    let digits: String = suffix
+        .chars()
+        .skip("THROWNJS:".len())
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    Some(format!("THROWNJS:{digits}"))
 }
 
 fn attach_promise_handlers(env: &Env, promise: JsUnknown, sender: SharedSender) -> napi::Result<()> {

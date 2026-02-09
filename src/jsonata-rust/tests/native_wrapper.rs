@@ -3,15 +3,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::Poll;
 
-use futures::executor::block_on;
-use futures::future::BoxFuture;
-use async_jsonata_rust::Evaluator;
 use async_jsonata_rust::functions::{core, math, strings};
 use async_jsonata_rust::parser;
 use async_jsonata_rust::types::{
     FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction, JsonValue, JsonataArray,
     JsonataValue,
 };
+use async_jsonata_rust::Evaluator;
+use futures::executor::block_on;
+use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
 #[derive(Clone)]

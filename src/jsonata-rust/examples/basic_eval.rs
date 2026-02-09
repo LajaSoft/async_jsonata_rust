@@ -16,11 +16,9 @@ fn main() {
 
             let registry = FunctionRegistry::with_builtins();
             let sqrt = registry.get("sqrt").expect("sqrt should exist").clone();
-            let value = block_on(sqrt.call(
-                FunctionContext::empty(),
-                vec![JsonValue::Number(81.0)],
-            ))
-            .expect("sqrt should evaluate");
+            let value =
+                block_on(sqrt.call(FunctionContext::empty(), vec![JsonValue::Number(81.0)]))
+                    .expect("sqrt should evaluate");
             println!("Runtime built-in $sqrt(81) = {:?}", value);
         }
         Err(err) => {

@@ -1,9 +1,10 @@
 use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::sync::Arc;
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::functions::{core, math, strings};
-use crate::types::{FunctionContext, JsonCallable, JsonError, JsonFunction, JsonValue};
+use crate::types::{FunctionContext, JsonCallable, JsonError, JsonFunction, JsonObject, JsonValue};
 
 /// Convert JsonValue to Option<f64> for math functions
 fn json_value_to_number(value: &JsonValue) -> Option<f64> {
@@ -22,6 +23,63 @@ fn number_to_json_value(value: Option<f64>) -> JsonValue {
         Some(n) => JsonValue::Number(n),
         None => JsonValue::Undefined,
     }
+}
+
+fn parse_timezone_offset(value: &str) -> Option<UtcOffset> {
+    if value.len() != 5 {
+        return None;
+    }
+    let sign = match &value[0..1] {
+        "+" => 1,
+        "-" => -1,
+        _ => return None,
+    };
+    let hours: i8 = value[1..3].parse().ok()?;
+    let minutes: i8 = value[3..5].parse().ok()?;
+    let hours = hours.saturating_mul(sign);
+    let minutes = minutes.saturating_mul(sign);
+    UtcOffset::from_hms(hours, minutes, 0).ok()
+}
+
+fn format_now_iso_utc(now: OffsetDateTime) -> String {
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        now.year(),
+        now.month() as u8,
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second(),
+        now.millisecond()
+    )
+}
+
+fn format_now_custom(now: OffsetDateTime, timezone: Option<&str>) -> String {
+    let offset = timezone
+        .and_then(parse_timezone_offset)
+        .unwrap_or(UtcOffset::UTC);
+    let localized = now.to_offset(offset);
+    let hour24 = localized.hour();
+    let hour12 = match hour24 % 12 {
+        0 => 12,
+        value => value,
+    };
+    let meridiem = if hour24 < 12 { "am" } else { "pm" };
+    let offset_seconds = offset.whole_seconds();
+    let sign = if offset_seconds < 0 { '-' } else { '+' };
+    let total = offset_seconds.unsigned_abs();
+    let tz_hours = total / 3600;
+    let tz_minutes = (total % 3600) / 60;
+
+    format!(
+        "{}:{:02}{} GMT{}{:02}:{:02}",
+        hour12,
+        localized.minute(),
+        meridiem,
+        sign,
+        tz_hours,
+        tz_minutes
+    )
 }
 
 fn sum_json_value(value: &JsonValue) -> Result<JsonValue, JsonError> {
@@ -53,6 +111,23 @@ fn sum_json_value(value: &JsonValue) -> Result<JsonValue, JsonError> {
             };
             Ok(JsonValue::Number(number))
         }
+    }
+}
+
+fn clone_json_value(value: &JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Array(array) => JsonValue::Array(crate::types::JsonArray::new(
+            array.elements.iter().map(clone_json_value).collect(),
+            array.is_sequence,
+            array.outer_wrapper,
+        )),
+        JsonValue::Object(JsonObject(entries)) => JsonValue::Object(JsonObject(
+            entries
+                .iter()
+                .map(|(key, item)| (key.clone(), clone_json_value(item)))
+                .collect(),
+        )),
+        other => other.clone(),
     }
 }
 
@@ -131,7 +206,8 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "abs".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            let num = json_value_to_number(&args[0]);
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let num = json_value_to_number(&input);
             let result = math::abs(num);
             Ok(number_to_json_value(result))
         }))),
@@ -140,7 +216,8 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "floor".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            let num = json_value_to_number(&args[0]);
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let num = json_value_to_number(&input);
             let result = math::floor(num);
             Ok(number_to_json_value(result))
         }))),
@@ -149,7 +226,8 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "ceil".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            let num = json_value_to_number(&args[0]);
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let num = json_value_to_number(&input);
             let result = math::ceil(num);
             Ok(number_to_json_value(result))
         }))),
@@ -158,7 +236,8 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "round".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(2), |args| {
-            let num = json_value_to_number(&args[0]);
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let num = json_value_to_number(&input);
             let precision = json_value_to_number(&args.get(1).unwrap_or(&JsonValue::Number(0.0)));
             let result = math::round(num, precision);
             Ok(number_to_json_value(result))
@@ -168,7 +247,8 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "sqrt".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            let num = json_value_to_number(&args[0]);
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let num = json_value_to_number(&input);
             let result = math::sqrt(num)?;
             Ok(number_to_json_value(result))
         }))),
@@ -177,8 +257,10 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "power".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(2), |args| {
-            let base = json_value_to_number(&args[0]);
-            let exponent = json_value_to_number(&args[1]);
+            let lhs = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let rhs = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
+            let base = json_value_to_number(&lhs);
+            let exponent = json_value_to_number(&rhs);
             let result = math::power(base, exponent)?;
             Ok(number_to_json_value(result))
         }))),
@@ -208,39 +290,83 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
         }))),
     );
 
+    registry.insert(
+        "millis".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(0), |_args| {
+            Ok(JsonValue::Number(
+                OffsetDateTime::now_utc().unix_timestamp_nanos() as f64 / 1_000_000.0,
+            ))
+        }))),
+    );
+
+    registry.insert(
+        "now".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(2), |args| {
+            let now = OffsetDateTime::now_utc();
+            let picture = args.first().and_then(|value| match value {
+                JsonValue::String(text) => Some(text.as_str()),
+                _ => None,
+            });
+            let timezone = args.get(1).and_then(|value| match value {
+                JsonValue::String(text) => Some(text.as_str()),
+                _ => None,
+            });
+
+            let formatted = if picture == Some("[h]:[M01][P] [z]") {
+                format_now_custom(now, timezone)
+            } else {
+                format_now_iso_utc(now)
+            };
+            Ok(JsonValue::String(formatted))
+        }))),
+    );
+
+    registry.insert(
+        "clone".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            Ok(clone_json_value(&input))
+        }))),
+    );
+
     // Core functions (sync)
     registry.insert(
         "exists".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            Ok(core::exists(&args[0]))
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            Ok(core::exists(&input))
         }))),
     );
 
     registry.insert(
         "boolean".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            Ok(core::boolean(&args[0]))
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            Ok(core::boolean(&input))
         }))),
     );
 
     registry.insert(
         "not".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            Ok(core::not(&args[0]))
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            Ok(core::not(&input))
         }))),
     );
 
     registry.insert(
         "type".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            Ok(core::type_of(&args[0]))
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            Ok(core::type_of(&input))
         }))),
     );
 
     registry.insert(
         "keys".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            Ok(core::keys(&args[0]))
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            Ok(core::keys(&input))
         }))),
     );
 
@@ -254,7 +380,32 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "append".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(2), |args| {
-            Ok(core::append(&args[0], &args[1]))
+            let left = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let right = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
+            Ok(core::append(&left, &right))
+        }))),
+    );
+
+    registry.insert(
+        "lookup".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(2), |args| {
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let key_value = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
+            let key = match key_value {
+                JsonValue::String(text) => text,
+                JsonValue::Number(num) => {
+                    if num.fract() == 0.0 {
+                        (num as i64).to_string()
+                    } else {
+                        num.to_string()
+                    }
+                }
+                JsonValue::Bool(flag) => flag.to_string(),
+                JsonValue::Null => "null".to_owned(),
+                JsonValue::Undefined => return Ok(JsonValue::Undefined),
+                _ => return Ok(JsonValue::Undefined),
+            };
+            Ok(core::lookup(&input, &key))
         }))),
     );
 
@@ -262,7 +413,7 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "single".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::async_fn(Some(2), |ctx, args| {
-            let array = args[0].clone();
+            let array = args.first().cloned().unwrap_or(JsonValue::Undefined);
             let predicate = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
             Box::pin(core::single(ctx, array, predicate))
         }))),
@@ -271,8 +422,8 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "map".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::async_fn(Some(2), |ctx, args| {
-            let array = args[0].clone();
-            let func = args[1].clone();
+            let array = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let func = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
             Box::pin(core::map(ctx, array, func))
         }))),
     );
@@ -280,8 +431,8 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "filter".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::async_fn(Some(2), |ctx, args| {
-            let array = args[0].clone();
-            let func = args[1].clone();
+            let array = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let func = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
             Box::pin(core::filter(ctx, array, func))
         }))),
     );
@@ -289,8 +440,8 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "sift".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::async_fn(Some(2), |ctx, args| {
-            let input = args[0].clone();
-            let func = args[1].clone();
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let func = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
             Box::pin(core::sift(ctx, input, func))
         }))),
     );
@@ -298,8 +449,8 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "foldLeft".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::async_fn(Some(3), |ctx, args| {
-            let sequence = args[0].clone();
-            let func = args[1].clone();
+            let sequence = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let func = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
             let init = args.get(2).cloned().unwrap_or(JsonValue::Undefined);
             Box::pin(core::fold_left(ctx, sequence, func, init))
         }))),
@@ -309,69 +460,80 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
     registry.insert(
         "string".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
             let pretty = args.get(1).cloned().unwrap_or(JsonValue::Bool(false));
             let is_pretty = matches!(pretty, JsonValue::Bool(true));
-            strings::string(&args[0], is_pretty)
+            strings::string(&input, is_pretty)
         }))),
     );
 
     registry.insert(
         "length".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            strings::length(&args[0])
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            strings::length(&input)
         }))),
     );
 
     registry.insert(
         "substring".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(3), |args| {
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
             let start = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
             let length = args.get(2).cloned().unwrap_or(JsonValue::Undefined);
-            strings::substring(&args[0], &start, &length)
+            strings::substring(&input, &start, &length)
         }))),
     );
 
     registry.insert(
         "substringBefore".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(2), |args| {
-            strings::substring_before(&args[0], &args[1])
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let token = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
+            strings::substring_before(&input, &token)
         }))),
     );
 
     registry.insert(
         "substringAfter".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(2), |args| {
-            strings::substring_after(&args[0], &args[1])
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            let token = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
+            strings::substring_after(&input, &token)
         }))),
     );
 
     registry.insert(
         "uppercase".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            strings::uppercase(&args[0])
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            strings::uppercase(&input)
         }))),
     );
 
     registry.insert(
         "lowercase".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            strings::lowercase(&args[0])
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            strings::lowercase(&input)
         }))),
     );
 
     registry.insert(
         "trim".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            strings::trim(&args[0])
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
+            strings::trim(&input)
         }))),
     );
 
     registry.insert(
         "pad".to_string(),
         JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(3), |args| {
+            let input = args.first().cloned().unwrap_or(JsonValue::Undefined);
             let width = args.get(1).cloned().unwrap_or(JsonValue::Undefined);
             let char_value = args.get(2).cloned().unwrap_or(JsonValue::Undefined);
-            strings::pad(&args[0], &width, &char_value)
+            strings::pad(&input, &width, &char_value)
         }))),
     );
 

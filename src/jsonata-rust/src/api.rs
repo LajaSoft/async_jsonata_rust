@@ -321,13 +321,45 @@ impl Evaluator {
     /// assert_eq!(out?, async_jsonata_rust::JsonValue::Number(1.0));
     /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
-    pub fn evaluate(
+    pub fn evaluate(&self, expression: &Expression, input: &JsonValue) -> Result<JsonValue, Error> {
+        evaluator::evaluate_expression(expression.ast(), input, self.functions.as_map()).map_err(
+            |err| err.with_context("expression", Value::String(expression.source().to_owned())),
+        )
+    }
+
+    /// Evaluates parsed expression against input JSON with external variable bindings.
+    ///
+    /// Bindings are visible as variables (e.g. binding `"x"` is available as `$x` in expression).
+    ///
+    /// # Examples
+    /// ```rust
+    /// use std::collections::HashMap;
+    /// use async_jsonata_rust::{Evaluator, JsonValue};
+    ///
+    /// let evaluator = Evaluator::with_builtins();
+    /// let expression = evaluator.parse("$x + 1")?;
+    /// let mut bindings = HashMap::new();
+    /// bindings.insert("x".to_string(), JsonValue::Number(41.0));
+    ///
+    /// let out = evaluator.evaluate_with_bindings(&expression, &JsonValue::Null, &bindings)?;
+    /// assert_eq!(out, JsonValue::Number(42.0));
+    /// # Ok::<(), async_jsonata_rust::Error>(())
+    /// ```
+    pub fn evaluate_with_bindings(
         &self,
         expression: &Expression,
         input: &JsonValue,
+        bindings: &HashMap<String, JsonValue>,
     ) -> Result<JsonValue, Error> {
-        evaluator::evaluate_expression(expression.ast(), input, self.functions.as_map())
-            .map_err(|err| err.with_context("expression", Value::String(expression.source().to_owned())))
+        evaluator::evaluate_expression_with_bindings(
+            expression.ast(),
+            input,
+            self.functions.as_map(),
+            bindings,
+        )
+        .map_err(|err| {
+            err.with_context("expression", Value::String(expression.source().to_owned()))
+        })
     }
 
     /// Returns evaluator function registry.

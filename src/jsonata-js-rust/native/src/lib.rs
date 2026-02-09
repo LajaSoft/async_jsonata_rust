@@ -17,6 +17,7 @@ use jsonata_rust::types::{
 };
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::mem;
 use std::sync::{Arc, Mutex};
 
@@ -43,11 +44,14 @@ mod bridge_register_strings;
 mod bridge_callable;
 #[path = "lib/callable_registry.rs"]
 mod bridge_callable_registry;
+#[path = "lib/thrown_error_registry.rs"]
+mod bridge_thrown_error_registry;
 
 use bridge_types::*;
 use bridge_handles::*;
 use bridge_callable::*;
 use bridge_callable_registry::*;
+use bridge_thrown_error_registry::*;
 use bridge_convert::*;
 use bridge_register_core::*;
 use bridge_register_math::*;
@@ -106,5 +110,81 @@ pub fn parse_expression(
     }
 
     let unknown = result_object.to_unknown();
+    Ok(unsafe { mem::transmute::<JsUnknown<'_>, JsUnknown<'static>>(unknown) })
+}
+
+fn collect_bindings(
+    env: &Env,
+    bindings: Option<JsObject>,
+) -> napi::Result<(HashMap<String, JsonValue>, HashMap<String, JsonFunction>)> {
+    let mut value_bindings: HashMap<String, JsonValue> = HashMap::new();
+    let mut function_bindings: HashMap<String, JsonFunction> = HashMap::new();
+
+    let Some(bindings) = bindings else {
+        return Ok((value_bindings, function_bindings));
+    };
+
+    let names = bindings.get_property_names()?;
+    let length = names.get_array_length()?;
+    for index in 0..length {
+        let name_value: JsUnknown = names.get_element(index)?;
+        let name = name_value
+            .coerce_to_string()?
+            .into_utf8()?
+            .as_str()?
+            .to_owned();
+
+        let property: JsUnknown = bindings.get_named_property(&name)?;
+        let converted = js_unknown_to_json_value(env, property)?;
+        value_bindings.insert(name.clone(), converted.clone());
+
+        if let JsonValue::Function(function) = converted {
+            let normalized = name.trim_start_matches('$').to_owned();
+            if !normalized.is_empty() {
+                function_bindings.insert(normalized, function);
+            }
+        }
+    }
+
+    Ok((value_bindings, function_bindings))
+}
+
+#[napi(js_name = "evaluateExpression")]
+pub fn evaluate_expression(
+    env: Env,
+    source: String,
+    input: JsUnknown,
+    bindings: Option<JsObject>,
+) -> napi::Result<sys::napi_value> {
+    let input_value = js_unknown_to_json_value(&env, input)?;
+    let (value_bindings, function_bindings) = collect_bindings(&env, bindings)?;
+
+    env.spawn_future_with_callback(
+        async move {
+            let mut registry = jsonata_rust::FunctionRegistry::with_builtins();
+            for (name, function) in function_bindings {
+                registry.insert(name, function);
+            }
+            let evaluator = jsonata_rust::Evaluator::new(registry);
+            let expression = evaluator
+                .parse(source)
+                .map_err(|err| Error::new(Status::GenericFailure, format!("{}: {}", err.code(), err.message())))?;
+            evaluator
+                .evaluate_with_bindings(&expression, &input_value, &value_bindings)
+                .map_err(|err| Error::new(Status::GenericFailure, format!("{}: {}", err.code(), err.message())))
+        },
+        |env, result| json_value_to_js(env, result),
+    )
+    .map(|promise| promise.raw())
+}
+
+#[napi(js_name = "takeThrownError")]
+pub fn take_thrown_error(env: Env, id: i64) -> napi::Result<JsUnknown<'static>> {
+    if id >= 0 {
+        if let Some(value) = bridge_thrown_error_registry::take_thrown_error(&env, id as u64)? {
+            return Ok(unsafe { mem::transmute::<JsUnknown<'_>, JsUnknown<'static>>(value) });
+        }
+    }
+    let unknown = undefined(&env)?;
     Ok(unsafe { mem::transmute::<JsUnknown<'_>, JsUnknown<'static>>(unknown) })
 }

@@ -128,12 +128,8 @@
             return impl;
         }
 
-        const overrideArity = Object.prototype.hasOwnProperty.call(rustArityOverrides, name)
-            ? rustArityOverrides[name]
-            : undefined;
-        const inferredArity = typeof overrideArity === 'number'
-            ? overrideArity
-            : (typeof impl.arity === 'number' ? impl.arity : (typeof impl.length === 'number' ? impl.length : 0));
+        const overrideArity = Object.prototype.hasOwnProperty.call(rustArityOverrides, name) ? rustArityOverrides[name] : undefined;
+        const inferredArity = typeof overrideArity === 'number' ? overrideArity : (typeof impl.arity === 'number' ? impl.arity : (typeof impl.length === 'number' ? impl.length : 0));
 
         const params = Array.from({ length: inferredArity || 0 }, (_, index) => `arg${index}`);
         const argsList = params.join(', ');

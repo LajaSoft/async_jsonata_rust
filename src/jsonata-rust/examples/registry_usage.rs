@@ -1,6 +1,6 @@
-use futures::executor::block_on;
 use async_jsonata_rust::create_builtin_registry;
 use async_jsonata_rust::types::{FunctionContext, JsonValue};
+use futures::executor::block_on;
 
 fn main() {
     let registry = create_builtin_registry();

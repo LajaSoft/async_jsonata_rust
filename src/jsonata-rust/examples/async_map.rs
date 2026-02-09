@@ -1,12 +1,12 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use futures::executor::block_on;
-use futures::future::BoxFuture;
 use async_jsonata_rust::functions::core;
 use async_jsonata_rust::types::{
     FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction, JsonValue,
 };
+use futures::executor::block_on;
+use futures::future::BoxFuture;
 
 #[derive(Clone)]
 struct DoubleCallable;

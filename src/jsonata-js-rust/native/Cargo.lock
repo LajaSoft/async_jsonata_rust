@@ -120,6 +120,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
+name = "async_jsonata_rust"
+version = "0.2.0"
+dependencies = [
+ "base64",
+ "futures",
+ "percent-encoding",
+ "rand 0.9.2",
+ "regex",
+ "ryu",
+ "serde",
+ "serde_json",
+ "time",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2248,27 +2263,14 @@ dependencies = [
 name = "jsonata_js_bridge"
 version = "0.1.0"
 dependencies = [
+ "async_jsonata_rust",
  "cargo-outdated",
  "futures",
- "jsonata_rust",
  "napi",
  "napi-build",
  "napi-derive",
  "paste",
  "regex",
- "serde_json",
-]
-
-[[package]]
-name = "jsonata_rust"
-version = "0.1.0"
-dependencies = [
- "base64",
- "futures",
- "percent-encoding",
- "rand 0.9.2",
- "ryu",
- "serde",
  "serde_json",
 ]
 

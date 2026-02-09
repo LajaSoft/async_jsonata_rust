@@ -107,6 +107,18 @@ pub(crate) fn js_unknown_to_json_value(env: &Env, value: JsUnknown) -> napi::Res
                             return js_unknown_to_json_value(env, apply_value);
                         }
                     }
+                    if object.has_named_property("implementation")? {
+                        let implementation_value: JsUnknown =
+                            object.get_named_property("implementation")?;
+                        if matches!(implementation_value.get_type()?, ValueType::Function) {
+                            let mut implementation_object = implementation_value.coerce_to_object()?;
+                            if object.has_named_property("arity")? {
+                                let arity_value: JsUnknown = object.get_named_property("arity")?;
+                                implementation_object.set_named_property("arity", arity_value)?;
+                            }
+                            return js_unknown_to_json_value(env, implementation_value);
+                        }
+                    }
                 }
 
                 let property_names = object.get_property_names()?;

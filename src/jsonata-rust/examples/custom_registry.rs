@@ -1,10 +1,12 @@
 use std::any::Any;
 use std::sync::Arc;
 
+use async_jsonata_rust::types::{
+    FunctionContext, JsonCallable, JsonError, JsonFunction, JsonValue,
+};
+use async_jsonata_rust::FunctionRegistry;
 use futures::executor::block_on;
 use futures::future::BoxFuture;
-use async_jsonata_rust::types::{FunctionContext, JsonCallable, JsonError, JsonFunction, JsonValue};
-use async_jsonata_rust::FunctionRegistry;
 
 #[derive(Clone)]
 struct TripleCallable;
