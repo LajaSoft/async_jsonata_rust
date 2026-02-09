@@ -6,7 +6,6 @@ use crate::error::Error;
 use crate::types::{JsonArray, JsonFunction, JsonObject, JsonValue};
 
 use super::lambda;
-use super::ops::to_number;
 use super::value::{materialize_value, object_keys_from_value, upsert_object_property};
 use super::{eval, Bindings};
 
@@ -63,6 +62,9 @@ pub(super) fn eval_unary(
         let mut out = Vec::with_capacity(expressions.len());
         for expr in expressions {
             let value = eval(expr, input, focus, functions, bindings)?;
+            if value.is_undefined() {
+                continue;
+            }
             match value {
                 JsonValue::Array(array) if array.is_sequence => {
                     for element in array.elements {
@@ -116,10 +118,16 @@ pub(super) fn eval_unary(
             .get("expression")
             .ok_or_else(|| Error::new("E2017", "Unary minus missing expression"))?;
         let value = eval(expr, input, focus, functions, bindings)?;
-        if let Some(num) = to_number(&value) {
-            return Ok(JsonValue::Number(-num));
+        if value.is_undefined() {
+            return Ok(JsonValue::Undefined);
         }
-        return Ok(JsonValue::Undefined);
+        if let JsonValue::Number(num) = value {
+            if num.is_finite() {
+                return Ok(JsonValue::Number(-num));
+            }
+            return Err(Error::new("D1001", format!("Number out of range;value:{num}")));
+        }
+        return Err(Error::new("D1002", "Cannot negate a non-numeric value;token:-"));
     }
 
     Err(Error::new(

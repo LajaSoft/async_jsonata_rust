@@ -18,11 +18,24 @@ pub(super) fn eval_path(
     functions: &HashMap<String, JsonFunction>,
     bindings: &Bindings,
 ) -> Result<JsonValue, Error> {
-    let mut current = focus.clone();
     let steps = node
         .get("steps")
         .and_then(Value::as_array)
         .ok_or_else(|| Error::new("E2002", "Path node missing steps"))?;
+    let starts_from_variable = steps
+        .first()
+        .and_then(|step| step.get("type").and_then(Value::as_str))
+        == Some("variable");
+    let mut current = match focus {
+        JsonValue::Array(array) if !array.is_sequence && !starts_from_variable => {
+            JsonValue::Array(JsonArray::new(
+                array.elements.clone(),
+                true,
+                array.outer_wrapper,
+            ))
+        }
+        _ => focus.clone(),
+    };
 
     for (index, step) in steps.iter().enumerate() {
         if index == 0
@@ -58,8 +71,19 @@ fn eval_path_step(
             core::lookup(current, key)
         }
         "function" => eval_path_expr_step(step, input, current, functions, bindings)?,
-        "variable" => eval_path_expr_step(step, input, current, functions, bindings)?,
-        "block" => eval_path_expr_step(step, input, current, functions, bindings)?,
+        "variable" => eval(step, input, current, functions, bindings)?,
+        "block" => {
+            let has_local_predicate = step
+                .get("predicate")
+                .and_then(Value::as_array)
+                .map(|predicates| !predicates.is_empty())
+                .unwrap_or(false);
+            if has_local_predicate {
+                eval(step, input, current, functions, bindings)?
+            } else {
+                eval_path_expr_step(step, input, current, functions, bindings)?
+            }
+        }
         "condition" => eval_path_expr_step(step, input, current, functions, bindings)?,
         "number" => JsonValue::Number(step.get("value").and_then(Value::as_f64).unwrap_or(0.0)),
         "string" => JsonValue::String(
@@ -116,6 +140,24 @@ fn apply_stage(
                 .ok_or_else(|| Error::new("E2004", "Filter stage missing expr"))?;
 
             if let Some(index) = extract_filter_index(expr) {
+                if let JsonValue::Array(array) = current {
+                    if array.is_sequence
+                        && array
+                            .elements
+                            .iter()
+                            .all(|item| matches!(item, JsonValue::Array(_)))
+                    {
+                        let mut mapped = Vec::new();
+                        let index_value = Value::Number(index.into());
+                        for item in &array.elements {
+                            let selected = apply_index(item, &index_value);
+                            if !selected.is_undefined() {
+                                mapped.push(selected);
+                            }
+                        }
+                        return Ok(from_sequence(mapped));
+                    }
+                }
                 return Ok(apply_index(current, &Value::Number(index.into())));
             }
 

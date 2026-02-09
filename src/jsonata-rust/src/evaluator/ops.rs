@@ -48,11 +48,11 @@ pub(super) fn eval_binary(
     let right = eval(rhs, input, focus, functions, bindings)?;
 
     match op {
-        "+" => number_binop(&left, &right, |a, b| a + b),
-        "-" => number_binop(&left, &right, |a, b| a - b),
-        "*" => number_binop(&left, &right, |a, b| a * b),
-        "/" => number_binop(&left, &right, |a, b| a / b),
-        "%" => number_binop(&left, &right, |a, b| a % b),
+        "+" => number_binop(&left, &right, "+", |a, b| a + b),
+        "-" => number_binop(&left, &right, "-", |a, b| a - b),
+        "*" => number_binop(&left, &right, "*", |a, b| a * b),
+        "/" => number_binop(&left, &right, "/", |a, b| a / b),
+        "%" => number_binop(&left, &right, "%", |a, b| a % b),
         "&" => Ok(JsonValue::String(concat_strings(&left, &right))),
         ".." => range_op(&left, &right),
         "=" => Ok(JsonValue::Bool(values_equal(&left, &right))),
@@ -72,15 +72,36 @@ pub(super) fn eval_binary(
 fn number_binop(
     left: &JsonValue,
     right: &JsonValue,
+    token: &str,
     op: fn(f64, f64) -> f64,
 ) -> Result<JsonValue, Error> {
-    let Some(a) = to_number(left) else {
+    let a = strict_numeric_operand(left, "T2001", token)?;
+    let b = strict_numeric_operand(right, "T2002", token)?;
+    if a.is_none() || b.is_none() {
         return Ok(JsonValue::Undefined);
-    };
-    let Some(b) = to_number(right) else {
-        return Ok(JsonValue::Undefined);
-    };
+    }
+    let a = a.unwrap_or(0.0);
+    let b = b.unwrap_or(0.0);
     Ok(JsonValue::Number(op(a, b)))
+}
+
+fn strict_numeric_operand(
+    value: &JsonValue,
+    code: &str,
+    token: &str,
+) -> Result<Option<f64>, Error> {
+    match value {
+        JsonValue::Undefined => Ok(None),
+        JsonValue::Number(num) if num.is_finite() => Ok(Some(*num)),
+        JsonValue::Number(num) => Err(Error::new(
+            "D1001",
+            format!("Number out of range;value:{num};token:{token}"),
+        )),
+        _ => Err(Error::new(
+            code,
+            format!("Numeric operand expected;token:{token}"),
+        )),
+    }
 }
 
 fn concat_strings(left: &JsonValue, right: &JsonValue) -> String {
@@ -119,29 +140,50 @@ fn stringify_value(value: &JsonValue) -> String {
 }
 
 fn range_op(left: &JsonValue, right: &JsonValue) -> Result<JsonValue, Error> {
-    let Some(start) = to_number(left) else {
-        return Ok(JsonValue::Undefined);
-    };
-    let Some(end) = to_number(right) else {
-        return Ok(JsonValue::Undefined);
-    };
-    if start.fract() != 0.0 || end.fract() != 0.0 {
+    let start = strict_integer_operand(left, "T2003", "..")?;
+    let end = strict_integer_operand(right, "T2004", "..")?;
+    if start.is_none() || end.is_none() {
         return Ok(JsonValue::Undefined);
     }
-
-    let start = start as i64;
-    let end = end as i64;
-    let step = if start <= end { 1 } else { -1 };
+    let start = start.unwrap_or(0);
+    let end = end.unwrap_or(0);
+    if start > end {
+        return Ok(JsonValue::Undefined);
+    }
+    let size = end - start + 1;
+    if size > 10_000_000 {
+        return Err(Error::new("D2014", format!("Range too large;value:{size}")));
+    }
     let mut current = start;
     let mut out = Vec::new();
-    loop {
+    while current <= end {
         out.push(JsonValue::Number(current as f64));
-        if current == end {
-            break;
-        }
-        current += step;
+        current += 1;
     }
     Ok(JsonValue::Array(JsonArray::new(out, true, false)))
+}
+
+fn strict_integer_operand(
+    value: &JsonValue,
+    code: &str,
+    token: &str,
+) -> Result<Option<i64>, Error> {
+    match value {
+        JsonValue::Undefined => Ok(None),
+        JsonValue::Number(num) if num.is_finite() && num.fract() == 0.0 => Ok(Some(*num as i64)),
+        JsonValue::Number(num) if num.is_finite() => Err(Error::new(
+            code,
+            format!("Integer operand expected;value:{num};token:{token}"),
+        )),
+        JsonValue::Number(num) => Err(Error::new(
+            "D1001",
+            format!("Number out of range;value:{num};token:{token}"),
+        )),
+        _ => Err(Error::new(
+            code,
+            format!("Integer operand expected;token:{token}"),
+        )),
+    }
 }
 
 pub(super) fn compare_sort_values(left: Option<&JsonValue>, right: Option<&JsonValue>) -> Ordering {

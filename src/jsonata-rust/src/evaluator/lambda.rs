@@ -106,13 +106,9 @@ impl JsonCallable for LambdaCallable {
             })?;
 
             result.map_err(|err| {
-                if err.code() == "U1001" {
-                    return JsonError::new("U1001", err.message().to_owned());
-                }
-                JsonError::new(
-                    "D3120",
-                    format!("Lambda execution failed: {}: {}", err.code(), err.message()),
-                )
+                let code: &'static str = Box::leak(err.code().to_owned().into_boxed_str());
+                let message = err.message().to_owned();
+                JsonError::new(code, message)
             })
         })
     }
