@@ -11,9 +11,9 @@ use crate::types::{JsonFunction, JsonValue};
 ///
 /// # Examples
 /// ```rust
-/// let expr = jsonata_rust::Parser::new().parse("Account.Order[0]")?;
+/// let expr = async_jsonata_rust::Parser::new().parse("Account.Order[0]")?;
 /// assert_eq!(expr.source(), "Account.Order[0]");
-/// # Ok::<(), jsonata_rust::Error>(())
+/// # Ok::<(), async_jsonata_rust::Error>(())
 /// ```
 #[derive(Debug, Clone)]
 pub struct Expression {
@@ -26,9 +26,9 @@ impl Expression {
     ///
     /// # Examples
     /// ```rust
-    /// let expr = jsonata_rust::Parser::new().parse("1")?;
+    /// let expr = async_jsonata_rust::Parser::new().parse("1")?;
     /// assert_eq!(expr.source(), "1");
-    /// # Ok::<(), jsonata_rust::Error>(())
+    /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
     pub fn source(&self) -> &str {
         &self.source
@@ -38,9 +38,9 @@ impl Expression {
     ///
     /// # Examples
     /// ```rust
-    /// let expr = jsonata_rust::Parser::new().parse("1")?;
+    /// let expr = async_jsonata_rust::Parser::new().parse("1")?;
     /// assert_eq!(expr.ast()["type"], "number");
-    /// # Ok::<(), jsonata_rust::Error>(())
+    /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
     pub fn ast(&self) -> &Value {
         &self.ast
@@ -50,10 +50,10 @@ impl Expression {
     ///
     /// # Examples
     /// ```rust
-    /// let expr = jsonata_rust::Parser::new().parse("1")?;
+    /// let expr = async_jsonata_rust::Parser::new().parse("1")?;
     /// let ast = expr.into_ast();
     /// assert!(ast.is_object());
-    /// # Ok::<(), jsonata_rust::Error>(())
+    /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
     pub fn into_ast(self) -> Value {
         self.ast
@@ -64,10 +64,10 @@ impl Expression {
 ///
 /// # Examples
 /// ```rust
-/// let parser = jsonata_rust::Parser::new();
+/// let parser = async_jsonata_rust::Parser::new();
 /// let expr = parser.parse("foo.bar")?;
 /// assert_eq!(expr.ast()["type"], "path");
-/// # Ok::<(), jsonata_rust::Error>(())
+/// # Ok::<(), async_jsonata_rust::Error>(())
 /// ```
 #[derive(Debug, Clone)]
 pub struct Parser {
@@ -85,10 +85,10 @@ impl Parser {
     ///
     /// # Examples
     /// ```rust
-    /// let parser = jsonata_rust::Parser::new();
+    /// let parser = async_jsonata_rust::Parser::new();
     /// let expr = parser.parse("a.b")?;
     /// assert_eq!(expr.ast()["type"], "path");
-    /// # Ok::<(), jsonata_rust::Error>(())
+    /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
     pub fn new() -> Self {
         Self { recover: false }
@@ -98,10 +98,10 @@ impl Parser {
     ///
     /// # Examples
     /// ```rust
-    /// let parser = jsonata_rust::Parser::new().with_recover(true);
+    /// let parser = async_jsonata_rust::Parser::new().with_recover(true);
     /// let expr = parser.parse("1+")?;
     /// assert!(expr.ast().get("errors").is_some());
-    /// # Ok::<(), jsonata_rust::Error>(())
+    /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
     pub fn with_recover(mut self, recover: bool) -> Self {
         self.recover = recover;
@@ -112,9 +112,9 @@ impl Parser {
     ///
     /// # Examples
     /// ```rust
-    /// let expression = jsonata_rust::Parser::new().parse("foo")?;
+    /// let expression = async_jsonata_rust::Parser::new().parse("foo")?;
     /// assert_eq!(expression.source(), "foo");
-    /// # Ok::<(), jsonata_rust::Error>(())
+    /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
     pub fn parse(&self, source: impl Into<String>) -> Result<Expression, Error> {
         let source = source.into();
@@ -127,7 +127,7 @@ impl Parser {
 ///
 /// # Examples
 /// ```rust
-/// let registry = jsonata_rust::FunctionRegistry::with_builtins();
+/// let registry = async_jsonata_rust::FunctionRegistry::with_builtins();
 /// assert!(registry.contains("sqrt"));
 /// ```
 #[derive(Clone, Default)]
@@ -140,7 +140,7 @@ impl FunctionRegistry {
     ///
     /// # Examples
     /// ```rust
-    /// let registry = jsonata_rust::FunctionRegistry::new();
+    /// let registry = async_jsonata_rust::FunctionRegistry::new();
     /// assert!(registry.is_empty());
     /// ```
     pub fn new() -> Self {
@@ -153,7 +153,7 @@ impl FunctionRegistry {
     ///
     /// # Examples
     /// ```rust
-    /// let registry = jsonata_rust::FunctionRegistry::with_builtins();
+    /// let registry = async_jsonata_rust::FunctionRegistry::with_builtins();
     /// assert!(registry.contains("abs"));
     /// ```
     pub fn with_builtins() -> Self {
@@ -169,7 +169,7 @@ impl FunctionRegistry {
     /// use std::any::Any;
     /// use std::sync::Arc;
     /// use futures::future::BoxFuture;
-    /// use jsonata_rust::types::{FunctionContext, JsonCallable, JsonError, JsonFunction, JsonValue};
+    /// use async_jsonata_rust::types::{FunctionContext, JsonCallable, JsonError, JsonFunction, JsonValue};
     ///
     /// #[derive(Clone)]
     /// struct IdFn;
@@ -180,7 +180,7 @@ impl FunctionRegistry {
     ///     fn as_any(&self) -> &(dyn Any + Send + Sync) { self }
     /// }
     ///
-    /// let mut registry = jsonata_rust::FunctionRegistry::new();
+    /// let mut registry = async_jsonata_rust::FunctionRegistry::new();
     /// registry.insert("id", JsonFunction::new(Arc::new(IdFn)));
     /// assert!(registry.contains("id"));
     /// ```
@@ -192,7 +192,7 @@ impl FunctionRegistry {
     ///
     /// # Examples
     /// ```rust
-    /// let registry = jsonata_rust::FunctionRegistry::with_builtins();
+    /// let registry = async_jsonata_rust::FunctionRegistry::with_builtins();
     /// assert!(registry.get("sqrt").is_some());
     /// ```
     pub fn get(&self, name: &str) -> Option<&JsonFunction> {
@@ -203,7 +203,7 @@ impl FunctionRegistry {
     ///
     /// # Examples
     /// ```rust
-    /// let registry = jsonata_rust::FunctionRegistry::with_builtins();
+    /// let registry = async_jsonata_rust::FunctionRegistry::with_builtins();
     /// assert!(registry.contains("round"));
     /// ```
     pub fn contains(&self, name: &str) -> bool {
@@ -214,7 +214,7 @@ impl FunctionRegistry {
     ///
     /// # Examples
     /// ```rust
-    /// let registry = jsonata_rust::FunctionRegistry::with_builtins();
+    /// let registry = async_jsonata_rust::FunctionRegistry::with_builtins();
     /// assert!(registry.len() > 0);
     /// ```
     pub fn len(&self) -> usize {
@@ -225,7 +225,7 @@ impl FunctionRegistry {
     ///
     /// # Examples
     /// ```rust
-    /// let registry = jsonata_rust::FunctionRegistry::new();
+    /// let registry = async_jsonata_rust::FunctionRegistry::new();
     /// assert!(registry.is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
@@ -236,7 +236,7 @@ impl FunctionRegistry {
     ///
     /// # Examples
     /// ```rust
-    /// let registry = jsonata_rust::FunctionRegistry::with_builtins();
+    /// let registry = async_jsonata_rust::FunctionRegistry::with_builtins();
     /// assert!(registry.as_map().contains_key("abs"));
     /// ```
     pub fn as_map(&self) -> &HashMap<String, JsonFunction> {
@@ -247,7 +247,7 @@ impl FunctionRegistry {
     ///
     /// # Examples
     /// ```rust
-    /// let registry = jsonata_rust::FunctionRegistry::with_builtins();
+    /// let registry = async_jsonata_rust::FunctionRegistry::with_builtins();
     /// let map = registry.into_inner();
     /// assert!(map.contains_key("abs"));
     /// ```
@@ -263,11 +263,11 @@ impl FunctionRegistry {
 ///
 /// # Examples
 /// ```rust
-/// let evaluator = jsonata_rust::Evaluator::with_builtins();
+/// let evaluator = async_jsonata_rust::Evaluator::with_builtins();
 /// let expression = evaluator.parse("1")?;
-/// let result = evaluator.evaluate(&expression, &jsonata_rust::JsonValue::Null);
+/// let result = evaluator.evaluate(&expression, &async_jsonata_rust::JsonValue::Null);
 /// assert!(result.is_err());
-/// # Ok::<(), jsonata_rust::Error>(())
+/// # Ok::<(), async_jsonata_rust::Error>(())
 /// ```
 #[derive(Clone, Default)]
 pub struct Evaluator {
@@ -279,7 +279,7 @@ impl Evaluator {
     ///
     /// # Examples
     /// ```rust
-    /// let evaluator = jsonata_rust::Evaluator::new(jsonata_rust::FunctionRegistry::new());
+    /// let evaluator = async_jsonata_rust::Evaluator::new(async_jsonata_rust::FunctionRegistry::new());
     /// assert!(evaluator.function_registry().is_empty());
     /// ```
     pub fn new(functions: FunctionRegistry) -> Self {
@@ -290,7 +290,7 @@ impl Evaluator {
     ///
     /// # Examples
     /// ```rust
-    /// let evaluator = jsonata_rust::Evaluator::with_builtins();
+    /// let evaluator = async_jsonata_rust::Evaluator::with_builtins();
     /// assert!(evaluator.function_registry().contains("sqrt"));
     /// ```
     pub fn with_builtins() -> Self {
@@ -301,10 +301,10 @@ impl Evaluator {
     ///
     /// # Examples
     /// ```rust
-    /// let evaluator = jsonata_rust::Evaluator::with_builtins();
+    /// let evaluator = async_jsonata_rust::Evaluator::with_builtins();
     /// let expression = evaluator.parse("foo.bar")?;
     /// assert_eq!(expression.ast()["type"], "path");
-    /// # Ok::<(), jsonata_rust::Error>(())
+    /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
     pub fn parse(&self, source: impl Into<String>) -> Result<Expression, Error> {
         Parser::new().parse(source)
@@ -314,11 +314,11 @@ impl Evaluator {
     ///
     /// # Examples
     /// ```rust
-    /// let evaluator = jsonata_rust::Evaluator::with_builtins();
+    /// let evaluator = async_jsonata_rust::Evaluator::with_builtins();
     /// let expression = evaluator.parse("1")?;
-    /// let out = evaluator.evaluate(&expression, &jsonata_rust::JsonValue::Null);
+    /// let out = evaluator.evaluate(&expression, &async_jsonata_rust::JsonValue::Null);
     /// assert!(out.is_err());
-    /// # Ok::<(), jsonata_rust::Error>(())
+    /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
     pub fn evaluate(
         &self,
@@ -335,7 +335,7 @@ impl Evaluator {
     ///
     /// # Examples
     /// ```rust
-    /// let evaluator = jsonata_rust::Evaluator::with_builtins();
+    /// let evaluator = async_jsonata_rust::Evaluator::with_builtins();
     /// assert!(evaluator.function_registry().contains("abs"));
     /// ```
     pub fn function_registry(&self) -> &FunctionRegistry {

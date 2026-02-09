@@ -1,4 +1,4 @@
-use jsonata_rust::parse_expression;
+use async_jsonata_rust::parse_expression;
 
 fn main() {
     let expression = "Account.Order[0].Product";

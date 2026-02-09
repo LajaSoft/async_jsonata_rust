@@ -23,16 +23,16 @@
 //!
 //! # Quick Start
 //! ```rust
-//! use jsonata_rust::Parser;
+//! use async_jsonata_rust::Parser;
 //!
 //! let parser = Parser::new();
 //! let expression = parser.parse("Account.Order[0].Product")?;
 //! assert_eq!(expression.ast()["type"], "path");
-//! # Ok::<(), jsonata_rust::Error>(())
+//! # Ok::<(), async_jsonata_rust::Error>(())
 //! ```
 //!
 //! # JSONata syntax
-//! `jsonata_rust` follows JSONata syntax from the official docs and upstream test-suite.
+//! `async_jsonata_rust` follows JSONata syntax from the official docs and upstream test-suite.
 //! Parser support is production-oriented, while evaluator parity is declared separately in
 //! `docs/compatibility.md` and crate README.
 //!
@@ -43,8 +43,8 @@
 //!
 //! use futures::executor::block_on;
 //! use futures::future::BoxFuture;
-//! use jsonata_rust::functions::core;
-//! use jsonata_rust::types::{FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction, JsonValue};
+//! use async_jsonata_rust::functions::core;
+//! use async_jsonata_rust::types::{FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction, JsonValue};
 //!
 //! #[derive(Clone)]
 //! struct DoubleCallable;

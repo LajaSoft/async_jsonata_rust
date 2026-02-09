@@ -10,7 +10,7 @@ use crate::types::JsonError;
 ///
 /// # Examples
 /// ```rust
-/// let err = jsonata_rust::Error::new("D3040", "Sqrt domain error");
+/// let err = async_jsonata_rust::Error::new("D3040", "Sqrt domain error");
 /// assert_eq!(err.code(), "D3040");
 /// ```
 #[derive(Debug, Clone)]
@@ -29,7 +29,7 @@ impl Error {
     ///
     /// # Examples
     /// ```rust
-    /// let err = jsonata_rust::Error::new("S0201", "Unexpected token");
+    /// let err = async_jsonata_rust::Error::new("S0201", "Unexpected token");
     /// assert_eq!(err.code(), "S0201");
     /// ```
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
@@ -48,8 +48,8 @@ impl Error {
     ///
     /// # Examples
     /// ```rust
-    /// let parse_error = jsonata_rust::parse_expression("1+", false).unwrap_err();
-    /// let err = jsonata_rust::Error::from(parse_error);
+    /// let parse_error = async_jsonata_rust::parse_expression("1+", false).unwrap_err();
+    /// let err = async_jsonata_rust::Error::from(parse_error);
     /// assert!(!err.code().is_empty());
     /// ```
     pub fn parser(err: ParserError) -> Self {
@@ -65,8 +65,8 @@ impl Error {
     ///
     /// # Examples
     /// ```rust
-    /// let runtime = jsonata_rust::JsonError::new("D3040", "Sqrt domain error");
-    /// let err = jsonata_rust::Error::from(runtime);
+    /// let runtime = async_jsonata_rust::JsonError::new("D3040", "Sqrt domain error");
+    /// let err = async_jsonata_rust::Error::from(runtime);
     /// assert_eq!(err.code(), "D3040");
     /// ```
     pub fn runtime(err: JsonError) -> Self {
@@ -77,7 +77,7 @@ impl Error {
     ///
     /// # Examples
     /// ```rust
-    /// let err = jsonata_rust::Error::not_implemented("evaluator pending");
+    /// let err = async_jsonata_rust::Error::not_implemented("evaluator pending");
     /// assert_eq!(err.code(), "E0001");
     /// ```
     pub fn not_implemented(message: impl Into<String>) -> Self {
@@ -88,7 +88,7 @@ impl Error {
     ///
     /// # Examples
     /// ```rust
-    /// let err = jsonata_rust::Error::new("E1", "oops")
+    /// let err = async_jsonata_rust::Error::new("E1", "oops")
     ///     .with_context("field", serde_json::Value::String("value".into()));
     /// assert!(err.context().contains_key("field"));
     /// ```

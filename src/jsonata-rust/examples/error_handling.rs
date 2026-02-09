@@ -1,5 +1,5 @@
-use jsonata_rust::functions::math;
-use jsonata_rust::Parser;
+use async_jsonata_rust::functions::math;
+use async_jsonata_rust::Parser;
 
 fn main() {
     match Parser::new().parse("1+") {

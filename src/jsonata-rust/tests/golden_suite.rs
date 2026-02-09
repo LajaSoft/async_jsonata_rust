@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use jsonata_rust::Parser;
+use async_jsonata_rust::Parser;
 use serde::Deserialize;
 use serde_json::Value;
 

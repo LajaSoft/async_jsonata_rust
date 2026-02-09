@@ -1,4 +1,4 @@
-use jsonata_rust::Parser;
+use async_jsonata_rust::Parser;
 
 #[test]
 fn bug_0001_trailing_operator_reports_error() {

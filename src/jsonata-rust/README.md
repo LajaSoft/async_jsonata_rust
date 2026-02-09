@@ -1,4 +1,4 @@
-# jsonata_rust
+# async_jsonata_rust
 
 Async-first Rust crate for JSONata parser/runtime foundations.
 
@@ -22,12 +22,12 @@ Low-level internals are still available under `parser::*`, but product API shoul
 ## Quick start
 
 ```rust
-use jsonata_rust::Parser;
+use async_jsonata_rust::Parser;
 
 let parser = Parser::new();
 let expr = parser.parse("Account.Order[0].Product")?;
 println!("AST kind: {}", expr.ast()["type"]);
-# Ok::<(), jsonata_rust::Error>(())
+# Ok::<(), async_jsonata_rust::Error>(())
 ```
 
 ## JSONata references

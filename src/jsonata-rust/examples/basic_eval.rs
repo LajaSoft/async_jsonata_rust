@@ -1,4 +1,4 @@
-use jsonata_rust::Parser;
+use async_jsonata_rust::Parser;
 
 fn main() {
     let parser = Parser::new();

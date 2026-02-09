@@ -1,6 +1,6 @@
 # JSONata Compatibility Matrix
 
-This document tracks compatibility of `jsonata_rust` against the reference `jsonata-js` engine.
+This document tracks compatibility of `async_jsonata_rust` against the reference `jsonata-js` engine.
 
 ## Reference baseline
 - Engine: `jsonata-js`

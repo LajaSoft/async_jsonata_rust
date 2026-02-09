@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "async_jsonata_rust"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "futures",
+ "percent-encoding",
+ "rand",
+ "ryu",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -142,19 +155,6 @@ name = "itoa"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
-
-[[package]]
-name = "jsonata_rust"
-version = "0.1.0"
-dependencies = [
- "base64",
- "futures",
- "percent-encoding",
- "rand",
- "ryu",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "libc"

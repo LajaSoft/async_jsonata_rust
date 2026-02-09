@@ -21,9 +21,9 @@ pub use tokenizer::{Token, TokenKind, Tokenizer};
 ///
 /// # Examples
 /// ```rust
-/// let ast = jsonata_rust::parser::parse_expression("Account.Order[0]", false)?;
+/// let ast = async_jsonata_rust::parser::parse_expression("Account.Order[0]", false)?;
 /// assert!(ast.is_object());
-/// # Ok::<(), jsonata_rust::parser::ParserError>(())
+/// # Ok::<(), async_jsonata_rust::parser::ParserError>(())
 /// ```
 pub fn parse_expression(source: &str, recover: bool) -> Result<Value, ParserError> {
     Parser::new(source, recover)?.parse()

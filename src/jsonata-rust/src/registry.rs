@@ -89,7 +89,7 @@ impl JsonCallable for BuiltinCallable {
 ///
 /// # Examples
 /// ```rust
-/// let registry = jsonata_rust::registry::create_builtin_registry();
+/// let registry = async_jsonata_rust::registry::create_builtin_registry();
 /// assert!(registry.contains_key("sqrt"));
 /// ```
 pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
@@ -325,7 +325,7 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
 ///
 /// # Examples
 /// ```rust
-/// let sqrt = jsonata_rust::registry::lookup_builtin("sqrt");
+/// let sqrt = async_jsonata_rust::registry::lookup_builtin("sqrt");
 /// assert!(sqrt.is_some());
 /// ```
 pub fn lookup_builtin(name: &str) -> Option<JsonFunction> {

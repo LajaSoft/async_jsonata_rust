@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use futures::executor::block_on;
 use futures::future::BoxFuture;
-use jsonata_rust::functions::core;
-use jsonata_rust::types::{
+use async_jsonata_rust::functions::core;
+use async_jsonata_rust::types::{
     FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction, JsonValue,
 };
 
