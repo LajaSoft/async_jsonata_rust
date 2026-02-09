@@ -18,6 +18,7 @@ struct LambdaCallable {
     arg_names: Vec<String>,
     body: Value,
     body_is_thunk: bool,
+    is_thunk: bool,
     recursive_name: Option<String>,
     captured_input: JsonValue,
     captured_focus: JsonValue,
@@ -72,10 +73,8 @@ impl JsonCallable for LambdaCallable {
             call_bindings.insert(format!("${name}"), value);
         }
 
-        let focus = match ctx.focus() {
-            Some(focus) => focus.input.clone(),
-            None => self.captured_focus.clone(),
-        };
+        let _ = ctx;
+        let focus = self.captured_focus.clone();
         let body = self.body.clone();
         let body_is_thunk = self.body_is_thunk;
         let captured_input = self.captured_input.clone();
@@ -145,12 +144,17 @@ pub(super) fn eval_lambda(
         .get("body")
         .cloned()
         .ok_or_else(|| Error::new("E2026", "Lambda missing body"))?;
-    let body_is_thunk = body.get("thunk").and_then(Value::as_bool).unwrap_or(false);
+    let body_is_thunk = node
+        .get("thunk")
+        .and_then(Value::as_bool)
+        .or_else(|| body.get("thunk").and_then(Value::as_bool))
+        .unwrap_or(false);
 
     let callable = LambdaCallable {
         arg_names,
         body,
         body_is_thunk,
+        is_thunk: node.get("thunk").and_then(Value::as_bool).unwrap_or(false),
         recursive_name: None,
         captured_input: input.clone(),
         captured_focus: focus.clone(),
@@ -171,6 +175,15 @@ pub(super) fn bind_recursive_name(function: &JsonFunction, name: &str) -> Option
     rebound.recursive_name = Some(name.to_owned());
 
     Some(JsonFunction::new(Arc::new(rebound)))
+}
+
+pub(super) fn is_thunk_function(function: &JsonFunction) -> bool {
+    function
+        .as_callable()
+        .as_any()
+        .downcast_ref::<LambdaCallable>()
+        .map(|lambda| lambda.is_thunk)
+        .unwrap_or(false)
 }
 
 fn extract_lambda_arg_name(arg: &Value) -> Option<String> {

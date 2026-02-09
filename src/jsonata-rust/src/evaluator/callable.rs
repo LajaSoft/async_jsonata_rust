@@ -12,8 +12,11 @@ use crate::types::{
     FunctionContext, JsonArray, JsonCallable, JsonFunction, JsonObject, JsonValue, JsonataFocus,
 };
 
+use super::lambda;
 use super::transform::eval_transform_apply;
 use super::{eval, Bindings};
+
+const CUSTOM_REGEX_FACTORY_BINDING: &str = "__jsonata_regex_engine_factory";
 
 pub(super) fn eval_variable(
     node: &Value,
@@ -28,6 +31,9 @@ pub(super) fn eval_variable(
         .unwrap_or_default();
 
     if raw == "$" {
+        if node.get("id").and_then(Value::as_str) == Some("$$") {
+            return Ok(input.clone());
+        }
         return Ok(focus.clone());
     }
     if raw.is_empty() {
@@ -206,7 +212,11 @@ fn build_regex_match_value(regex: Arc<Regex>, input: String, offset: usize) -> J
     ]))
 }
 
-pub(super) fn eval_regex(node: &Value) -> Result<JsonValue, Error> {
+pub(super) fn eval_regex(
+    node: &Value,
+    focus: &JsonValue,
+    bindings: &Bindings,
+) -> Result<JsonValue, Error> {
     let payload = node
         .get("value")
         .and_then(Value::as_object)
@@ -219,6 +229,22 @@ pub(super) fn eval_regex(node: &Value) -> Result<JsonValue, Error> {
         .get("flags")
         .and_then(Value::as_str)
         .unwrap_or_default();
+
+    if let Some(JsonValue::Function(factory)) = bindings.get(CUSTOM_REGEX_FACTORY_BINDING) {
+        let ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
+        let args = vec![
+            JsonValue::String(pattern.to_owned()),
+            JsonValue::String(flags.to_owned()),
+        ];
+        let produced = block_on(factory.call(ctx, args)).map_err(Error::from)?;
+        return match produced {
+            JsonValue::Function(matcher) => Ok(JsonValue::Function(matcher)),
+            other => Err(Error::new(
+                "D1004",
+                format!("Custom RegexEngine factory must return function, got {:?}", other),
+            )),
+        };
+    }
 
     let mut builder = RegexBuilder::new(pattern);
     if flags.contains('i') {
@@ -242,6 +268,28 @@ pub(super) fn eval_function(
     focus: &JsonValue,
     functions: &HashMap<String, JsonFunction>,
     bindings: &Bindings,
+) -> Result<JsonValue, Error> {
+    eval_function_internal(node, input, focus, functions, bindings, None)
+}
+
+pub(super) fn eval_function_with_applyto(
+    node: &Value,
+    input: &JsonValue,
+    focus: &JsonValue,
+    functions: &HashMap<String, JsonFunction>,
+    bindings: &Bindings,
+    applyto: &JsonValue,
+) -> Result<JsonValue, Error> {
+    eval_function_internal(node, input, focus, functions, bindings, Some(applyto))
+}
+
+fn eval_function_internal(
+    node: &Value,
+    input: &JsonValue,
+    focus: &JsonValue,
+    functions: &HashMap<String, JsonFunction>,
+    bindings: &Bindings,
+    applyto: Option<&JsonValue>,
 ) -> Result<JsonValue, Error> {
     let procedure = node
         .get("procedure")
@@ -298,13 +346,40 @@ pub(super) fn eval_function(
     for arg in arguments {
         args.push(eval(arg, input, focus, functions, bindings)?);
     }
-    if args.is_empty() {
-        args.push(focus.clone());
+
+    let arity = callable.arity();
+    if let Some(context_value) = applyto {
+        if args.is_empty() {
+            args.push(context_value.clone());
+        } else if arity.is_some() && args.len() < arity.unwrap_or(0) {
+            args.insert(0, context_value.clone());
+        }
+    } else if args.is_empty() {
+        if arity.is_none() || arity.unwrap_or(0) > 0 {
+            args.push(focus.clone());
+        }
     }
 
     let ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
     match block_on(callable.call(ctx, args)) {
-        Ok(value) => Ok(value),
+        Ok(mut value) => {
+            let mut trampoline_steps = 0usize;
+            while let JsonValue::Function(thunk) = &value {
+                if !lambda::is_thunk_function(thunk) {
+                    break;
+                }
+                if trampoline_steps >= 1024 {
+                    return Err(Error::new(
+                        "U1001",
+                        "Stack overflow error: non-terminating recursive function call",
+                    ));
+                }
+                let thunk_ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
+                value = block_on(thunk.call(thunk_ctx, Vec::new())).map_err(Error::from)?;
+                trampoline_steps += 1;
+            }
+            Ok(value)
+        }
         Err(err) => {
             let mut details = err.message.clone();
             if let Some(position) = node.get("position").and_then(Value::as_i64) {

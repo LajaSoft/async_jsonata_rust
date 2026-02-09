@@ -74,7 +74,7 @@ pub(super) fn eval_unary(
                 other => out.push(other),
             }
         }
-        return Ok(JsonValue::Array(JsonArray::new(out, false, false)));
+        return Ok(JsonValue::Array(JsonArray::new(out, false, true)));
     }
 
     if op == "{" {

@@ -207,9 +207,6 @@ pub(crate) fn json_value_to_js(env: &Env, value: JsonValue) -> napi::Result<JsUn
         JsonValue::Object(JsonObject(entries)) => {
             let mut js_object = Object::new(env)?;
             for (key, entry_value) in entries {
-                if matches!(entry_value, JsonValue::Function(_)) {
-                    continue;
-                }
                 let js_value = json_value_to_js(env, entry_value)?;
                 js_object.set_named_property(&key, js_value)?;
             }

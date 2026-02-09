@@ -47,7 +47,15 @@ pub(super) fn eval_path(
             current = eval(step, input, &current, functions, bindings)?;
             continue;
         }
-        current = eval_path_step(step, input, &current, functions, bindings)?;
+        current = eval_path_step(
+            step,
+            index,
+            starts_from_variable,
+            input,
+            &current,
+            functions,
+            bindings,
+        )?;
     }
 
     Ok(current)
@@ -55,12 +63,16 @@ pub(super) fn eval_path(
 
 fn eval_path_step(
     step: &Value,
+    step_index: usize,
+    starts_from_variable: bool,
     input: &JsonValue,
     current: &JsonValue,
     functions: &HashMap<String, JsonFunction>,
     bindings: &Bindings,
 ) -> Result<JsonValue, Error> {
     let step_type = step.get("type").and_then(Value::as_str).unwrap_or_default();
+    let stages = step.get("stages").and_then(Value::as_array);
+    let mut stages_applied_per_item = false;
 
     let mut out = match step_type {
         "name" => {
@@ -68,9 +80,36 @@ fn eval_path_step(
                 .get("value")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            core::lookup(current, key)
+            if starts_from_variable && step_index > 0 {
+                if let Some(stages) = stages {
+                let mut combined = Vec::new();
+                for item in to_sequence(current) {
+                    let mut local = core::lookup(&item, key);
+                    for stage in stages {
+                        local = apply_stage(stage, input, &local, functions, bindings)?;
+                    }
+                    if local.is_undefined() {
+                        continue;
+                    }
+                    match local {
+                        JsonValue::Array(array) if array.is_sequence => {
+                            combined.extend(array.elements);
+                        }
+                        other => combined.push(other),
+                    }
+                }
+                stages_applied_per_item = true;
+                from_sequence(combined)
+                } else {
+                    core::lookup(current, key)
+                }
+            } else {
+                core::lookup(current, key)
+            }
         }
-        "function" => eval_path_expr_step(step, input, current, functions, bindings)?,
+        "function" => {
+            eval_path_expr_step(step, input, current, functions, bindings, step_index > 0)?
+        }
         "variable" => eval(step, input, current, functions, bindings)?,
         "block" => {
             let has_local_predicate = step
@@ -81,10 +120,10 @@ fn eval_path_step(
             if has_local_predicate {
                 eval(step, input, current, functions, bindings)?
             } else {
-                eval_path_expr_step(step, input, current, functions, bindings)?
+                eval_path_expr_step(step, input, current, functions, bindings, false)?
             }
         }
-        "condition" => eval_path_expr_step(step, input, current, functions, bindings)?,
+        "condition" => eval_path_expr_step(step, input, current, functions, bindings, false)?,
         "number" => JsonValue::Number(step.get("value").and_then(Value::as_f64).unwrap_or(0.0)),
         "string" => JsonValue::String(
             step.get("value")
@@ -94,11 +133,11 @@ fn eval_path_step(
         ),
         "sort" => apply_sort_step(step, input, current, functions, bindings)?,
         "wildcard" => apply_wildcard(current),
-        "unary" => eval_path_expr_step(step, input, current, functions, bindings)?,
+        "unary" => eval_path_expr_step(step, input, current, functions, bindings, false)?,
         "descendant" => apply_descendant(current),
         other => {
             if step.get("type").is_some() {
-                eval_path_expr_step(step, input, current, functions, bindings)?
+                eval_path_expr_step(step, input, current, functions, bindings, false)?
             } else {
                 return Err(Error::new(
                     "E2003",
@@ -112,9 +151,11 @@ fn eval_path_step(
         out = apply_index(&out, index);
     }
 
-    if let Some(stages) = step.get("stages").and_then(Value::as_array) {
-        for stage in stages {
-            out = apply_stage(stage, input, &out, functions, bindings)?;
+    if !stages_applied_per_item {
+        if let Some(stages) = stages {
+            for stage in stages {
+                out = apply_stage(stage, input, &out, functions, bindings)?;
+            }
         }
     }
 
@@ -208,6 +249,7 @@ fn eval_path_expr_step(
     current: &JsonValue,
     functions: &HashMap<String, JsonFunction>,
     bindings: &Bindings,
+    applyto_context: bool,
 ) -> Result<JsonValue, Error> {
     let mut values = to_sequence(current);
     if values.is_empty() && current.is_undefined() {
@@ -219,7 +261,13 @@ fn eval_path_expr_step(
 
     let mut out = Vec::new();
     for item in values {
-        let value = eval(step, input, &item, functions, bindings)?;
+        let value = if applyto_context && step.get("type").and_then(Value::as_str) == Some("function") {
+            super::callable::eval_function_with_applyto(
+                step, input, &item, functions, bindings, &item,
+            )?
+        } else {
+            eval(step, input, &item, functions, bindings)?
+        };
         if value.is_undefined() {
             continue;
         }

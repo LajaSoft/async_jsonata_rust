@@ -97,7 +97,7 @@ pub(super) fn eval(
         "value" => Ok(value::json_value_from_serde(
             node.get("value").unwrap_or(&Value::Null),
         )),
-        "regex" => callable::eval_regex(node),
+        "regex" => callable::eval_regex(node, focus, bindings),
         "function" => callable::eval_function(node, input, focus, functions, bindings),
         "binary" => ops::eval_binary(node, input, focus, functions, bindings),
         "apply" => callable::eval_apply(node, input, focus, functions, bindings),
@@ -139,7 +139,13 @@ pub(super) fn eval(
     {
         return match result {
             JsonValue::Undefined => Ok(JsonValue::Undefined),
-            JsonValue::Array(array) if array.is_sequence => Ok(JsonValue::Array(array)),
+            JsonValue::Array(array) => {
+                if array.is_sequence || !array.outer_wrapper {
+                    return Ok(JsonValue::Array(array));
+                }
+                let wrapped = JsonValue::Array(array);
+                Ok(JsonValue::Array(JsonArray::new(vec![wrapped], true, false)))
+            }
             other => Ok(JsonValue::Array(JsonArray::new(vec![other], true, false))),
         };
     }
