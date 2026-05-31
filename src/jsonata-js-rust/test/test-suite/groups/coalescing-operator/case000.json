@@ -1,6 +1,0 @@
-{
-    "expr": "bar ?? 42",
-    "dataset": "dataset0",
-    "bindings": {},
-    "result": 98
-}

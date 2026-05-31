@@ -1,17 +1,13 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use async_jsonata_rust::Parser;
 use serde::Deserialize;
-use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 struct GoldenCase {
     id: String,
-    input: Value,
     expr: String,
-    expected: Value,
 }
 
 fn load_cases() -> Vec<GoldenCase> {
@@ -52,49 +48,6 @@ fn golden_expressions_parse_successfully() {
     }
 }
 
-fn eval_reference(expr: &str, input: &Value) -> Result<Value, String> {
-    let script = r#"
-const jsonata = require('../jsonata-js-rust/src/jsonata');
-const input = JSON.parse(process.argv[1]);
-const expr = process.argv[2];
-(async () => {
-  const out = await jsonata(expr).evaluate(input);
-  process.stdout.write(JSON.stringify(out));
-})().catch((err) => {
-  const code = err && err.code ? err.code : 'ERR';
-  const msg = err && err.message ? err.message : String(err);
-  process.stderr.write(code + ':' + msg);
-  process.exit(1);
-});
-"#;
-
-    let output = Command::new("node")
-        .arg("-e")
-        .arg(script)
-        .arg(input.to_string())
-        .arg(expr)
-        .output()
-        .map_err(|err| format!("node exec failed: {err}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(stderr);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(stdout.as_ref()).map_err(|err| format!("bad JSON output: {err}"))
-}
-
-#[test]
-#[ignore = "requires node + jsonata-js reference runtime"]
-fn differential_matches_jsonata_js_reference() {
-    for case in load_cases() {
-        let actual = eval_reference(case.expr.as_str(), &case.input)
-            .unwrap_or_else(|err| panic!("{} reference eval failed: {}", case.id, err));
-        assert_eq!(
-            actual, case.expected,
-            "{} mismatch against reference jsonata-js",
-            case.id
-        );
-    }
-}
+// The differential test that cross-checked golden cases against the upstream
+// jsonata-js runtime via node was removed along with the JS sources; the pure
+// Rust engine is now validated end-to-end by tests/official_suite.rs.

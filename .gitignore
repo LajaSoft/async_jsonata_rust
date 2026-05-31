@@ -1,12 +1,14 @@
-src/jsonata-rust/target/
-.corepack/
-.home/
+# Rust build artifacts
+target/
+
+# Cargo / toolchain homes used by the dev container
 .cargo/
-.corepack/
+.home/
+
+# Docker / scratch
+.docker/
 tmp/
+
+# Core dumps
 core
 core.[0-9]*
-
-.pnpm-store/
-.docker/
-.pnpm-store/

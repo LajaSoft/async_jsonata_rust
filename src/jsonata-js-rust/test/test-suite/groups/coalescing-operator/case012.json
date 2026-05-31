@@ -1,7 +1,0 @@
-{
-    "description": "empty string is used",
-    "expr": "\"\" ?? 42",
-    "dataset": "dataset0",
-    "bindings": {},
-    "result": ""
-}
