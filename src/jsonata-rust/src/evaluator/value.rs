@@ -58,10 +58,22 @@ pub(super) fn json_value_from_serde(value: &Value) -> JsonValue {
             false,
             false,
         )),
-        Value::Object(map) => JsonValue::Object(JsonObject(
-            map.iter()
-                .map(|(key, item)| (key.clone(), json_value_from_serde(item)))
-                .collect(),
-        )),
+        Value::Object(map) => {
+            // The tokenizer encodes the `undefined` literal as a sentinel object;
+            // a `value` AST node carrying it evaluates to JSONata `undefined`.
+            if map.len() == 1
+                && map
+                    .get("__jsonata_undefined__")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+            {
+                return JsonValue::Undefined;
+            }
+            JsonValue::Object(JsonObject(
+                map.iter()
+                    .map(|(key, item)| (key.clone(), json_value_from_serde(item)))
+                    .collect(),
+            ))
+        }
     }
 }

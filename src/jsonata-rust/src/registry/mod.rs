@@ -5,6 +5,8 @@ use crate::types::{JsonFunction, JsonValue};
 mod callable;
 mod common;
 mod core;
+mod datetime;
+mod errors;
 mod math;
 mod regex;
 mod strings;
@@ -21,8 +23,10 @@ pub fn create_builtin_registry() -> HashMap<String, JsonFunction> {
 
     math::register(&mut registry);
     core::register(&mut registry);
+    datetime::register(&mut registry);
     strings::register(&mut registry);
     regex::register(&mut registry);
+    errors::register(&mut registry);
 
     registry
 }

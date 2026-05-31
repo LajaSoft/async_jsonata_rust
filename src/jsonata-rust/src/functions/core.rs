@@ -93,17 +93,10 @@ pub fn append_jsonata(left: &JsonataValue, right: &JsonataValue) -> JsonataValue
 fn coerce_zip_sequence(value: &JsonValue) -> Vec<JsonValue> {
     match value {
         JsonValue::Undefined => Vec::new(),
-        JsonValue::Array(array) => {
-            if array.outer_wrapper && !array.is_sequence {
-                vec![JsonValue::Array(JsonArray::new(
-                    array.elements.clone(),
-                    array.is_sequence,
-                    array.outer_wrapper,
-                ))]
-            } else {
-                clone_array_elements(array)
-            }
-        }
+        // In JSONata, $zip iterates the elements of each array argument. A
+        // scalar argument is treated as a singleton (matching JS where it is
+        // delivered as a length-1 sequence by the variadic argument handling).
+        JsonValue::Array(array) => clone_array_elements(array),
         other => vec![other.clone()],
     }
 }
@@ -282,8 +275,8 @@ pub fn sort_default(array: &JsonValue) -> Result<JsonValue, JsonError> {
     if input_array.elements.len() <= 1 {
         return Ok(JsonValue::Array(JsonArray::new(
             input_array.elements.clone(),
-            input_array.is_sequence,
-            input_array.outer_wrapper,
+            false,
+            false,
         )));
     }
 
@@ -306,11 +299,7 @@ pub fn sort_default(array: &JsonValue) -> Result<JsonValue, JsonError> {
         SortDomain::Empty => {}
     }
 
-    Ok(JsonValue::Array(JsonArray::new(
-        elements,
-        input_array.is_sequence,
-        input_array.outer_wrapper,
-    )))
+    Ok(JsonValue::Array(JsonArray::new(elements, false, false)))
 }
 
 pub async fn sort(
@@ -321,19 +310,14 @@ pub async fn sort(
     let input_array = match array {
         JsonValue::Undefined => return Ok(JsonValue::Undefined),
         JsonValue::Array(arr) => arr,
-        _ => {
-            return Err(JsonError::new(
-                "D3070",
-                "Sort expects an array as the first argument",
-            ))
-        }
+        other => JsonArray::new(vec![other], true, false),
     };
 
     if input_array.elements.len() <= 1 {
         return Ok(JsonValue::Array(JsonArray::new(
             input_array.elements.clone(),
-            input_array.is_sequence,
-            input_array.outer_wrapper,
+            false,
+            false,
         )));
     }
 
@@ -367,11 +351,7 @@ pub async fn sort(
         sorted.insert(insert_index, item);
     }
 
-    Ok(JsonValue::Array(JsonArray::new(
-        sorted,
-        input_array.is_sequence,
-        input_array.outer_wrapper,
-    )))
+    Ok(JsonValue::Array(JsonArray::new(sorted, false, false)))
 }
 
 fn build_hof_args(
@@ -380,7 +360,11 @@ fn build_hof_args(
     second: Option<JsonValue>,
     third: Option<JsonValue>,
 ) -> Vec<JsonValue> {
-    let arity = callable.arity().unwrap_or(3);
+    // A callback's arity determines how many of (value, index, array) it
+    // receives, matching the reference engine's argument-count behaviour. A
+    // built-in with an unspecified (variadic) arity is treated as unary, since
+    // aggregate built-ins like `$sum`/`$string` accept only the single value.
+    let arity = callable.arity().unwrap_or(1);
 
     let mut args = Vec::with_capacity(
         1 + second.as_ref().map(|_| 1).unwrap_or_default()
@@ -572,12 +556,7 @@ pub async fn fold_left(
     let array = match sequence {
         JsonValue::Undefined => return Ok(JsonValue::Undefined),
         JsonValue::Array(arr) => arr,
-        _ => {
-            return Err(JsonError::new(
-                "D3050",
-                "$foldLeft() expects the first argument to be an array",
-            ))
-        }
+        other => JsonArray::new(vec![other], true, false),
     };
 
     let callable = match func {
@@ -797,31 +776,36 @@ pub fn spread(value: &JsonValue) -> JsonValue {
 }
 
 pub fn merge(value: &JsonValue) -> Result<JsonValue, JsonError> {
-    match value {
-        JsonValue::Undefined => Ok(JsonValue::Undefined),
-        JsonValue::Array(array) => {
-            let mut merged: Vec<(String, JsonValue)> = Vec::new();
-            for element in &array.elements {
-                if let JsonValue::Object(JsonObject(entries)) = element {
-                    for (key, val) in entries {
-                        if let Some((_, existing)) = merged
-                            .iter_mut()
-                            .find(|(existing_key, _)| existing_key == key)
-                        {
-                            *existing = val.clone();
-                        } else {
-                            merged.push((key.clone(), val.clone()));
-                        }
-                    }
+    // The `<a<o>>` signature coerces a single object into a singleton array
+    // before invocation, so a bare object is merged with itself.
+    let elements: Vec<JsonValue> = match value {
+        JsonValue::Undefined => return Ok(JsonValue::Undefined),
+        JsonValue::Array(array) => array.elements.clone(),
+        JsonValue::Object(_) => vec![value.clone()],
+        _ => {
+            return Err(JsonError::new(
+                "D3050",
+                "$merge() expects the argument to be an array of objects",
+            ))
+        }
+    };
+
+    let mut merged: Vec<(String, JsonValue)> = Vec::new();
+    for element in &elements {
+        if let JsonValue::Object(JsonObject(entries)) = element {
+            for (key, val) in entries {
+                if let Some((_, existing)) = merged
+                    .iter_mut()
+                    .find(|(existing_key, _)| existing_key == key)
+                {
+                    *existing = val.clone();
+                } else {
+                    merged.push((key.clone(), val.clone()));
                 }
             }
-            Ok(JsonValue::Object(JsonObject(merged)))
         }
-        _ => Err(JsonError::new(
-            "D3050",
-            "$merge() expects the argument to be an array of objects",
-        )),
     }
+    Ok(JsonValue::Object(JsonObject(merged)))
 }
 
 pub fn reverse(value: &JsonValue) -> Result<JsonValue, JsonError> {

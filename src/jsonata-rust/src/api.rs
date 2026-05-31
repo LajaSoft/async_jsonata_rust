@@ -8,6 +8,40 @@ use crate::parser;
 use crate::registry;
 use crate::types::{JsonFunction, JsonValue};
 
+/// Stack size (bytes) for the thread that drives the sync evaluation facade.
+///
+/// The evaluator is now `.await`-driven end to end: deeply recursive JSONata
+/// (e.g. recursive lambdas / higher-order functions) builds a correspondingly
+/// deep chain of boxed `eval` futures, and polling that chain consumes native
+/// stack proportional to the recursion depth. The old engine sidestepped this
+/// by spawning a fresh OS thread *per lambda call*; we instead drive the whole
+/// top-level future once on a single generously sized stack. This only affects
+/// the synchronous facade — `evaluate_async` runs on the caller's executor and
+/// leaves the stack policy to them.
+const SYNC_FACADE_STACK_SIZE: usize = 512 * 1024 * 1024;
+
+/// Drives `future` to completion on a dedicated large-stack thread, returning
+/// its result. Uses `std::thread::scope` so the future may borrow non-`'static`
+/// data (the expression AST, input document and bindings).
+fn block_on_large_stack<F>(future: F) -> Result<JsonValue, Error>
+where
+    F: std::future::Future<Output = Result<JsonValue, Error>> + Send,
+{
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(SYNC_FACADE_STACK_SIZE)
+            .spawn_scoped(scope, || futures::executor::block_on(future))
+            .expect("spawn evaluation worker thread")
+            .join()
+            .unwrap_or_else(|_| {
+                Err(Error::new(
+                    "U1001",
+                    "Stack overflow error: non-terminating recursive function call",
+                ))
+            })
+    })
+}
+
 /// Parsed JSONata expression wrapper.
 ///
 /// # Examples
@@ -322,9 +356,37 @@ impl Evaluator {
     /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
     pub fn evaluate(&self, expression: &Expression, input: &JsonValue) -> Result<JsonValue, Error> {
-        evaluator::evaluate_expression(expression.ast(), input, self.functions.as_map()).map_err(
-            |err| err.with_context("expression", Value::String(expression.source().to_owned())),
-        )
+        block_on_large_stack(self.evaluate_async(expression, input))
+    }
+
+    /// Asynchronously evaluates a parsed expression against input JSON.
+    ///
+    /// This is the genuinely async entry point: the whole expression tree is
+    /// driven with `.await`, so user-supplied async callables (e.g. functions
+    /// registered in the [`FunctionRegistry`]) are awaited cooperatively rather
+    /// than blocked on. The sync [`Evaluator::evaluate`] is a thin wrapper that
+    /// drives this future to completion with `block_on`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// let evaluator = async_jsonata_rust::Evaluator::with_builtins();
+    /// let expression = evaluator.parse("1")?;
+    /// let out = futures::executor::block_on(
+    ///     evaluator.evaluate_async(&expression, &async_jsonata_rust::JsonValue::Null),
+    /// );
+    /// assert_eq!(out?, async_jsonata_rust::JsonValue::Number(1.0));
+    /// # Ok::<(), async_jsonata_rust::Error>(())
+    /// ```
+    pub async fn evaluate_async(
+        &self,
+        expression: &Expression,
+        input: &JsonValue,
+    ) -> Result<JsonValue, Error> {
+        evaluator::evaluate_expression_async(expression.ast(), input, self.functions.as_map())
+            .await
+            .map_err(|err| {
+                err.with_context("expression", Value::String(expression.source().to_owned()))
+            })
     }
 
     /// Evaluates parsed expression against input JSON with external variable bindings.
@@ -351,12 +413,42 @@ impl Evaluator {
         input: &JsonValue,
         bindings: &HashMap<String, JsonValue>,
     ) -> Result<JsonValue, Error> {
-        evaluator::evaluate_expression_with_bindings(
+        block_on_large_stack(self.evaluate_with_bindings_async(expression, input, bindings))
+    }
+
+    /// Asynchronously evaluates a parsed expression with external variable
+    /// bindings. See [`Evaluator::evaluate_async`]; this is the async variant of
+    /// [`Evaluator::evaluate_with_bindings`].
+    ///
+    /// # Examples
+    /// ```rust
+    /// use std::collections::HashMap;
+    /// use async_jsonata_rust::{Evaluator, JsonValue};
+    ///
+    /// let evaluator = Evaluator::with_builtins();
+    /// let expression = evaluator.parse("$x + 1")?;
+    /// let mut bindings = HashMap::new();
+    /// bindings.insert("x".to_string(), JsonValue::Number(41.0));
+    ///
+    /// let out = futures::executor::block_on(
+    ///     evaluator.evaluate_with_bindings_async(&expression, &JsonValue::Null, &bindings),
+    /// )?;
+    /// assert_eq!(out, JsonValue::Number(42.0));
+    /// # Ok::<(), async_jsonata_rust::Error>(())
+    /// ```
+    pub async fn evaluate_with_bindings_async(
+        &self,
+        expression: &Expression,
+        input: &JsonValue,
+        bindings: &HashMap<String, JsonValue>,
+    ) -> Result<JsonValue, Error> {
+        evaluator::evaluate_expression_with_bindings_async(
             expression.ast(),
             input,
             self.functions.as_map(),
             bindings,
         )
+        .await
         .map_err(|err| {
             err.with_context("expression", Value::String(expression.source().to_owned()))
         })

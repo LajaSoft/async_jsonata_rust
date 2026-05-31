@@ -1,6 +1,6 @@
 use rand::Rng;
 
-use crate::types::{JsonError, JsonValue, JsonataValue};
+use crate::types::{JsonError, JsonObject, JsonValue, JsonataValue};
 
 /// Numeric helper functions translated from the JSONata JavaScript implementation.
 pub fn normalize_js_number(value: f64) -> f64 {
@@ -86,29 +86,141 @@ pub fn count<T>(args: Option<&[T]>) -> usize {
     }
 }
 
-pub fn max(args: Option<&[f64]>) -> Option<f64> {
-    let slice = args?;
-    if slice.is_empty() {
-        return None;
+/// Collects the numeric elements of a JSONata `$max`/`$min` argument.
+///
+/// A single number is treated as a singleton array. Every element must be a
+/// number; otherwise a `T0412` error is raised. An empty array (or `undefined`)
+/// yields `Ok(None)`, which the caller maps to `undefined`.
+fn collect_numbers(value: &JsonValue) -> Result<Option<Vec<f64>>, JsonError> {
+    match value {
+        // The `undefined` literal is surfaced to builtins as `Null` by the
+        // evaluator; both mean "no value" for $max/$min and yield undefined.
+        JsonValue::Undefined | JsonValue::Null => Ok(None),
+        JsonValue::Number(num) => Ok(Some(vec![*num])),
+        JsonValue::Array(array) => {
+            if array.elements.is_empty() {
+                return Ok(None);
+            }
+            let mut numbers = Vec::with_capacity(array.elements.len());
+            for element in &array.elements {
+                match element {
+                    JsonValue::Number(num) => numbers.push(*num),
+                    _ => {
+                        return Err(JsonError::new(
+                            "T0412",
+                            "Argument of function must be an array of numbers",
+                        ));
+                    }
+                }
+            }
+            Ok(Some(numbers))
+        }
+        // The literal `undefined` is represented by the parser as the marker
+        // object `{"__jsonata_undefined__": true}`; treat it as no value.
+        JsonValue::Object(JsonObject(entries))
+            if entries.len() == 1 && entries[0].0 == "__jsonata_undefined__" =>
+        {
+            Ok(None)
+        }
+        _ => Err(JsonError::new(
+            "T0412",
+            "Argument of function must be an array of numbers",
+        )),
     }
-    slice.iter().copied().reduce(f64::max)
 }
 
-pub fn min(args: Option<&[f64]>) -> Option<f64> {
-    let slice = args?;
-    if slice.is_empty() {
-        return None;
+pub fn max(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    match collect_numbers(value)? {
+        None => Ok(JsonValue::Undefined),
+        Some(numbers) => match numbers.into_iter().reduce(f64::max) {
+            Some(result) => Ok(JsonValue::Number(result)),
+            None => Ok(JsonValue::Undefined),
+        },
     }
-    slice.iter().copied().reduce(f64::min)
 }
 
-pub fn average(args: Option<&[f64]>) -> Option<f64> {
-    let slice = args?;
-    if slice.is_empty() {
-        return None;
+pub fn min(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    match collect_numbers(value)? {
+        None => Ok(JsonValue::Undefined),
+        Some(numbers) => match numbers.into_iter().reduce(f64::min) {
+            Some(result) => Ok(JsonValue::Number(result)),
+            None => Ok(JsonValue::Undefined),
+        },
     }
-    let total: f64 = slice.iter().copied().sum();
-    Some(total / slice.len() as f64)
+}
+
+/// Collects the numeric elements of a `$sum`/`$average` argument.
+///
+/// `undefined` yields `Ok(None)` (caller maps to undefined). A single number is
+/// treated as a singleton. Every element of an array must be a number; otherwise
+/// `T0412` is raised. An empty array yields `Ok(None)`.
+/// Returns true if the value is the parser's `undefined` literal marker object
+/// `{"__jsonata_undefined__": true}`, which the evaluator surfaces for the
+/// `undefined` keyword.
+fn is_undefined_marker(value: &JsonValue) -> bool {
+    matches!(
+        value,
+        JsonValue::Object(JsonObject(entries))
+            if entries.len() == 1 && entries[0].0 == "__jsonata_undefined__"
+    )
+}
+
+fn collect_numeric_sequence(value: &JsonValue) -> Result<Option<Vec<f64>>, JsonError> {
+    if is_undefined_marker(value) {
+        return Ok(None);
+    }
+    match value {
+        JsonValue::Undefined | JsonValue::Null => Ok(None),
+        JsonValue::Number(num) => Ok(Some(vec![*num])),
+        JsonValue::Array(array) => {
+            if array.elements.is_empty() {
+                return Ok(None);
+            }
+            let mut numbers = Vec::with_capacity(array.elements.len());
+            for element in &array.elements {
+                match element {
+                    JsonValue::Number(num) => numbers.push(*num),
+                    _ => {
+                        return Err(JsonError::new(
+                            "T0412",
+                            "Argument of function must be an array of numbers",
+                        ));
+                    }
+                }
+            }
+            Ok(Some(numbers))
+        }
+        // A non-array, non-numeric scalar (e.g. an object substituted as the
+        // implicit context for `$sum()`) does not match the `<a<n>>` parameter
+        // type, so it is a signature mismatch (T0410) rather than a bad array
+        // element (T0412).
+        _ => Err(JsonError::new(
+            "T0410",
+            "Argument of function does not match function signature",
+        )),
+    }
+}
+
+pub fn sum_value(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    match collect_numeric_sequence(value)? {
+        None => Ok(JsonValue::Undefined),
+        Some(numbers) => {
+            let total: f64 = numbers.iter().copied().sum();
+            Ok(JsonValue::Number(normalize_js_number(total)))
+        }
+    }
+}
+
+pub fn average(value: &JsonValue) -> Result<JsonValue, JsonError> {
+    match collect_numeric_sequence(value)? {
+        None => Ok(JsonValue::Undefined),
+        Some(numbers) => {
+            let total: f64 = numbers.iter().copied().sum();
+            Ok(JsonValue::Number(normalize_js_number(
+                total / numbers.len() as f64,
+            )))
+        }
+    }
 }
 
 fn adjust_negative_zero(value: f64) -> f64 {
@@ -322,21 +434,22 @@ pub fn power(base: Option<f64>, exponent: Option<f64>) -> Result<Option<f64>, Js
 }
 
 pub fn count_value(value: &JsonValue) -> JsonValue {
+    // The `<a:n>` signature coerces undefined to an empty array and any
+    // non-array (scalar) value to a singleton, so $count always counts the
+    // number of items in the resulting array.
+    if is_undefined_marker(value) {
+        return JsonValue::Number(0.0);
+    }
     match value {
         JsonValue::Undefined => JsonValue::Number(0.0),
         JsonValue::Array(array) => JsonValue::Number(array.elements.len() as f64),
-        JsonValue::String(text) => {
-            let len = text.encode_utf16().count() as f64;
-            JsonValue::Number(len)
-        }
-        _ => JsonValue::Undefined,
+        _ => JsonValue::Number(1.0),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::JsonObject;
 
     #[test]
     fn sum_handles_none() {
@@ -360,28 +473,66 @@ mod tests {
         assert_eq!(count(Some(&data)), 4);
     }
 
+    fn num_array(values: &[f64]) -> JsonValue {
+        JsonValue::Array(crate::types::JsonArray::new(
+            values.iter().map(|v| JsonValue::Number(*v)).collect(),
+            false,
+            false,
+        ))
+    }
+
     #[test]
     fn max_respects_empty() {
-        assert_eq!(max(Some(&[])), None);
+        assert_eq!(max(&num_array(&[])).unwrap(), JsonValue::Undefined);
+        assert_eq!(max(&JsonValue::Undefined).unwrap(), JsonValue::Undefined);
     }
 
     #[test]
     fn max_finds_value() {
-        let data = [1.0, 3.5, 2.0];
-        assert_eq!(max(Some(&data)), Some(3.5));
+        assert_eq!(
+            max(&num_array(&[1.0, 3.5, 2.0])).unwrap(),
+            JsonValue::Number(3.5)
+        );
+        assert_eq!(max(&JsonValue::Number(7.0)).unwrap(), JsonValue::Number(7.0));
     }
 
     #[test]
     fn min_finds_value() {
-        let data = [1.0, 3.5, 2.0];
-        assert_eq!(min(Some(&data)), Some(1.0));
+        assert_eq!(
+            min(&num_array(&[1.0, 3.5, 2.0])).unwrap(),
+            JsonValue::Number(1.0)
+        );
+    }
+
+    #[test]
+    fn max_rejects_non_numbers() {
+        let mixed = JsonValue::Array(crate::types::JsonArray::new(
+            vec![JsonValue::String("1".to_string()), JsonValue::Number(2.0)],
+            false,
+            false,
+        ));
+        let err = max(&mixed).unwrap_err();
+        assert_eq!(err.code, "T0412");
     }
 
     #[test]
     fn average_requires_items() {
-        let data = [2.0, 4.0];
-        assert_eq!(average(Some(&data)), Some(3.0));
-        assert_eq!(average(Some(&[])), None);
+        assert_eq!(
+            average(&num_array(&[2.0, 4.0])).unwrap(),
+            JsonValue::Number(3.0)
+        );
+        assert_eq!(average(&num_array(&[])).unwrap(), JsonValue::Undefined);
+        assert_eq!(average(&JsonValue::Undefined).unwrap(), JsonValue::Undefined);
+    }
+
+    #[test]
+    fn average_rejects_non_numbers() {
+        let mixed = JsonValue::Array(crate::types::JsonArray::new(
+            vec![JsonValue::String("1".to_string()), JsonValue::Number(2.0)],
+            false,
+            false,
+        ));
+        assert_eq!(average(&mixed).unwrap_err().code, "T0412");
     }
 
     #[test]
@@ -448,7 +599,7 @@ mod tests {
         assert_eq!(count_value(&array), JsonValue::Number(2.0));
 
         let text = JsonValue::String("hello".to_string());
-        assert_eq!(count_value(&text), JsonValue::Number(5.0));
+        assert_eq!(count_value(&text), JsonValue::Number(1.0));
 
         assert_eq!(count_value(&JsonValue::Undefined), JsonValue::Number(0.0));
     }

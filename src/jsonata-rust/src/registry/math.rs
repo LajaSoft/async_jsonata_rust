@@ -9,7 +9,7 @@ use crate::types::{JsonFunction, JsonValue};
 use super::callable::BuiltinCallable;
 use super::common::{
     clone_json_value, format_now_custom, format_now_iso_utc, json_value_to_number,
-    number_to_json_value, sum_json_value,
+    number_to_json_value,
 };
 use super::arg;
 
@@ -73,17 +73,66 @@ pub(super) fn register(registry: &mut HashMap<String, JsonFunction>) {
 
     registry.insert(
         "sum".to_string(),
-        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            let value = arg(args, 0);
-            sum_json_value(&value)
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(None, |args| {
+            if args.len() != 1 {
+                return Err(crate::types::JsonError::new(
+                    "T0410",
+                    "Argument of function sum does not match function signature",
+                ));
+            }
+            math::sum_value(&arg(args, 0))
+        }))),
+    );
+
+    registry.insert(
+        "average".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(None, |args| {
+            if args.len() != 1 {
+                return Err(crate::types::JsonError::new(
+                    "T0410",
+                    "Argument of function average does not match function signature",
+                ));
+            }
+            math::average(&arg(args, 0))
+        }))),
+    );
+
+    registry.insert(
+        "max".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(None, |args| {
+            if args.len() > 1 {
+                return Err(crate::types::JsonError::new(
+                    "T0410",
+                    "Argument 2 of function max does not match function signature",
+                ));
+            }
+            math::max(&arg(args, 0))
+        }))),
+    );
+
+    registry.insert(
+        "min".to_string(),
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(None, |args| {
+            if args.len() > 1 {
+                return Err(crate::types::JsonError::new(
+                    "T0410",
+                    "Argument 2 of function min does not match function signature",
+                ));
+            }
+            math::min(&arg(args, 0))
         }))),
     );
 
     registry.insert(
         "count".to_string(),
-        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(1), |args| {
-            let value = arg(args, 0);
-            Ok(math::count_value(&value))
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(None, |args| {
+            if args.len() > 1 {
+                return Err(crate::types::JsonError::new(
+                    "T0410",
+                    "Argument 2 of function count does not match function signature",
+                ));
+            }
+            Ok(math::count_value(&arg(args, 0)))
         }))),
     );
 

@@ -1,4 +1,5 @@
 use futures::future::BoxFuture;
+use serde_json::{Number, Value};
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
@@ -147,6 +148,76 @@ impl JsonValue {
     pub fn is_undefined(&self) -> bool {
         matches!(self, JsonValue::Undefined)
     }
+
+    /// Builds a [`JsonValue`] from a `serde_json::Value`.
+    ///
+    /// Plain JSON has no notion of "undefined" or functions, so the result only
+    /// uses the data-bearing variants. Arrays are materialized as non-sequence,
+    /// non-wrapper arrays.
+    pub fn from_serde_json(value: &Value) -> Self {
+        match value {
+            Value::Null => JsonValue::Null,
+            Value::Bool(flag) => JsonValue::Bool(*flag),
+            Value::Number(num) => JsonValue::Number(num.as_f64().unwrap_or(0.0)),
+            Value::String(text) => JsonValue::String(text.clone()),
+            Value::Array(values) => JsonValue::Array(JsonArray::new(
+                values.iter().map(JsonValue::from_serde_json).collect(),
+                false,
+                false,
+            )),
+            Value::Object(map) => JsonValue::Object(JsonObject(
+                map.iter()
+                    .map(|(key, item)| (key.clone(), JsonValue::from_serde_json(item)))
+                    .collect(),
+            )),
+        }
+    }
+
+    /// Converts a [`JsonValue`] into a `serde_json::Value`.
+    ///
+    /// Returns `None` for values that have no JSON representation, namely
+    /// [`JsonValue::Undefined`] and [`JsonValue::Function`]. Following JSONata
+    /// sequence semantics, `undefined` array elements and object values are
+    /// dropped. Whole-number floats serialize as JSON integers so they compare
+    /// equal to integer literals in the official test suite.
+    pub fn to_serde_json(&self) -> Option<Value> {
+        match self {
+            JsonValue::Undefined | JsonValue::Function(_) => None,
+            JsonValue::Null => Some(Value::Null),
+            JsonValue::Bool(flag) => Some(Value::Bool(*flag)),
+            JsonValue::Number(num) => Some(Value::Number(number_to_json(*num)?)),
+            JsonValue::String(text) => Some(Value::String(text.clone())),
+            JsonValue::Array(array) => {
+                let items = array
+                    .elements
+                    .iter()
+                    .filter_map(JsonValue::to_serde_json)
+                    .collect();
+                Some(Value::Array(items))
+            }
+            JsonValue::Object(JsonObject(entries)) => {
+                let mut map = serde_json::Map::with_capacity(entries.len());
+                for (key, item) in entries {
+                    if let Some(json) = item.to_serde_json() {
+                        map.insert(key.clone(), json);
+                    }
+                }
+                Some(Value::Object(map))
+            }
+        }
+    }
+}
+
+/// Encodes an `f64` as a `serde_json::Number`, using an integer representation
+/// for whole numbers so that `5.0` compares equal to a JSON `5`.
+fn number_to_json(num: f64) -> Option<Number> {
+    if !num.is_finite() {
+        return None;
+    }
+    if num.fract() == 0.0 && num >= i64::MIN as f64 && num <= i64::MAX as f64 {
+        return Some(Number::from(num as i64));
+    }
+    Number::from_f64(num)
 }
 
 #[derive(Clone)]

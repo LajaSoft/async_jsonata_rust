@@ -56,7 +56,18 @@ pub(super) fn register(registry: &mut HashMap<String, JsonFunction>) {
 
     registry.insert(
         "join".to_string(),
-        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(2), |args| {
+        JsonFunction::new(Arc::new(BuiltinCallable::sync_fn(Some(0), |args| {
+            // `$join` carries no context modifier in its signature
+            // (`<a<s>s?:s>`), so the required first argument cannot be supplied
+            // implicitly: calling `$join()` with no arguments is a signature
+            // mismatch (T0410), distinct from `$join(missing)` which yields
+            // undefined.
+            if args.is_empty() {
+                return Err(crate::types::JsonError::new(
+                    "T0410",
+                    "Argument 1 of function join does not match function signature",
+                ));
+            }
             let values = arg(args, 0);
             let separator = arg(args, 1);
             regex::join_function(values, separator)

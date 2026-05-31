@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+use futures::future::BoxFuture;
 use serde_json::Value;
 
 use crate::error::Error;
@@ -9,13 +10,14 @@ use crate::types::{JsonArray, JsonFunction, JsonObject, JsonValue};
 
 use super::{eval, Bindings};
 
-pub(super) fn eval_binary(
-    node: &Value,
-    input: &JsonValue,
-    focus: &JsonValue,
-    functions: &HashMap<String, JsonFunction>,
-    bindings: &Bindings,
-) -> Result<JsonValue, Error> {
+pub(super) fn eval_binary<'a>(
+    node: &'a Value,
+    input: &'a JsonValue,
+    focus: &'a JsonValue,
+    functions: &'a HashMap<String, JsonFunction>,
+    bindings: &'a Bindings,
+) -> BoxFuture<'a, Result<JsonValue, Error>> {
+    Box::pin(async move {
     let op = node
         .get("value")
         .and_then(Value::as_str)
@@ -27,13 +29,13 @@ pub(super) fn eval_binary(
         .get("rhs")
         .ok_or_else(|| Error::new("E2013", "Binary node missing rhs"))?;
 
-    let left = eval(lhs, input, focus, functions, bindings)?;
+    let left = eval(lhs, input, focus, functions, bindings).await?;
 
     if op == "and" {
         if !is_truthy(&left) {
             return Ok(JsonValue::Bool(false));
         }
-        let right = eval(rhs, input, focus, functions, bindings)?;
+        let right = eval(rhs, input, focus, functions, bindings).await?;
         return Ok(JsonValue::Bool(is_truthy(&right)));
     }
 
@@ -41,11 +43,11 @@ pub(super) fn eval_binary(
         if is_truthy(&left) {
             return Ok(JsonValue::Bool(true));
         }
-        let right = eval(rhs, input, focus, functions, bindings)?;
+        let right = eval(rhs, input, focus, functions, bindings).await?;
         return Ok(JsonValue::Bool(is_truthy(&right)));
     }
 
-    let right = eval(rhs, input, focus, functions, bindings)?;
+    let right = eval(rhs, input, focus, functions, bindings).await?;
 
     match op {
         "+" => number_binop(&left, &right, "+", |a, b| a + b),
@@ -55,6 +57,7 @@ pub(super) fn eval_binary(
         "%" => number_binop(&left, &right, "%", |a, b| a % b),
         "&" => Ok(JsonValue::String(concat_strings(&left, &right))),
         ".." => range_op(&left, &right),
+        "in" => Ok(JsonValue::Bool(evaluate_includes(&left, &right))),
         "=" => Ok(JsonValue::Bool(values_equal(&left, &right))),
         "!=" => Ok(JsonValue::Bool(!values_equal(&left, &right))),
         ">" => compare_values(&left, &right, "T2010", |o| o.is_gt()),
@@ -67,6 +70,7 @@ pub(super) fn eval_binary(
             format!("Unsupported binary operator: {op}"),
         )),
     }
+    })
 }
 
 fn number_binop(
@@ -237,6 +241,19 @@ fn compare_values(
         }
     };
     Ok(JsonValue::Bool(accept(ordering)))
+}
+
+/// Mirrors upstream `evaluateIncludesExpression`: `lhs in rhs`. If either side
+/// is undefined the result is false; a non-array rhs is treated as a singleton
+/// array; membership uses value equality.
+fn evaluate_includes(lhs: &JsonValue, rhs: &JsonValue) -> bool {
+    if lhs.is_undefined() || rhs.is_undefined() {
+        return false;
+    }
+    match rhs {
+        JsonValue::Array(array) => array.elements.iter().any(|item| values_equal(lhs, item)),
+        other => values_equal(lhs, other),
+    }
 }
 
 fn is_order_comparable(value: &JsonValue) -> bool {

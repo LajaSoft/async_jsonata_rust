@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use futures::executor::block_on;
 use futures::future::BoxFuture;
 use regex::{Regex, RegexBuilder};
 use serde_json::Value;
@@ -32,16 +31,16 @@ pub(super) fn eval_variable(
 
     if raw == "$" {
         if node.get("id").and_then(Value::as_str) == Some("$$") {
-            return Ok(input.clone());
+            return Ok(unwrap_outer_wrapper(input));
         }
-        return Ok(focus.clone());
+        return Ok(unwrap_outer_wrapper(focus));
     }
     if raw.is_empty() {
-        return Ok(focus.clone());
+        return Ok(unwrap_outer_wrapper(focus));
     }
 
     if raw == "$$" {
-        return Ok(input.clone());
+        return Ok(unwrap_outer_wrapper(input));
     }
 
     if let Some(value) = bindings.get(raw) {
@@ -58,6 +57,19 @@ pub(super) fn eval_variable(
     }
 
     Ok(JsonValue::Undefined)
+}
+
+/// Mirrors upstream `evaluateVariable`: the root `$`/`$$` reference returns the
+/// original document. When the document is a plain JSON array the engine wraps
+/// it in a singleton outer-wrapper sequence; unwrap that here so `$` yields the
+/// original array rather than the wrapper.
+fn unwrap_outer_wrapper(value: &JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Array(array) if array.outer_wrapper && array.elements.len() == 1 => {
+            array.elements[0].clone()
+        }
+        other => other.clone(),
+    }
 }
 
 #[derive(Clone)]
@@ -212,11 +224,12 @@ fn build_regex_match_value(regex: Arc<Regex>, input: String, offset: usize) -> J
     ]))
 }
 
-pub(super) fn eval_regex(
-    node: &Value,
-    focus: &JsonValue,
-    bindings: &Bindings,
-) -> Result<JsonValue, Error> {
+pub(super) fn eval_regex<'a>(
+    node: &'a Value,
+    focus: &'a JsonValue,
+    bindings: &'a Bindings,
+) -> BoxFuture<'a, Result<JsonValue, Error>> {
+    Box::pin(async move {
     let payload = node
         .get("value")
         .and_then(Value::as_object)
@@ -236,7 +249,7 @@ pub(super) fn eval_regex(
             JsonValue::String(pattern.to_owned()),
             JsonValue::String(flags.to_owned()),
         ];
-        let produced = block_on(factory.call(ctx, args)).map_err(Error::from)?;
+        let produced = factory.call(ctx, args).await.map_err(Error::from)?;
         return match produced {
             JsonValue::Function(matcher) => Ok(JsonValue::Function(matcher)),
             other => Err(Error::new(
@@ -260,37 +273,39 @@ pub(super) fn eval_regex(
     Ok(JsonValue::Function(JsonFunction::new(Arc::new(
         RegexMatcherCallable::root(Arc::new(regex)),
     ))))
+    })
 }
 
-pub(super) fn eval_function(
-    node: &Value,
-    input: &JsonValue,
-    focus: &JsonValue,
-    functions: &HashMap<String, JsonFunction>,
-    bindings: &Bindings,
-) -> Result<JsonValue, Error> {
+pub(super) fn eval_function<'a>(
+    node: &'a Value,
+    input: &'a JsonValue,
+    focus: &'a JsonValue,
+    functions: &'a HashMap<String, JsonFunction>,
+    bindings: &'a Bindings,
+) -> BoxFuture<'a, Result<JsonValue, Error>> {
     eval_function_internal(node, input, focus, functions, bindings, None)
 }
 
-pub(super) fn eval_function_with_applyto(
-    node: &Value,
-    input: &JsonValue,
-    focus: &JsonValue,
-    functions: &HashMap<String, JsonFunction>,
-    bindings: &Bindings,
-    applyto: &JsonValue,
-) -> Result<JsonValue, Error> {
+pub(super) fn eval_function_with_applyto<'a>(
+    node: &'a Value,
+    input: &'a JsonValue,
+    focus: &'a JsonValue,
+    functions: &'a HashMap<String, JsonFunction>,
+    bindings: &'a Bindings,
+    applyto: &'a JsonValue,
+) -> BoxFuture<'a, Result<JsonValue, Error>> {
     eval_function_internal(node, input, focus, functions, bindings, Some(applyto))
 }
 
-fn eval_function_internal(
-    node: &Value,
-    input: &JsonValue,
-    focus: &JsonValue,
-    functions: &HashMap<String, JsonFunction>,
-    bindings: &Bindings,
-    applyto: Option<&JsonValue>,
-) -> Result<JsonValue, Error> {
+fn eval_function_internal<'a>(
+    node: &'a Value,
+    input: &'a JsonValue,
+    focus: &'a JsonValue,
+    functions: &'a HashMap<String, JsonFunction>,
+    bindings: &'a Bindings,
+    applyto: Option<&'a JsonValue>,
+) -> BoxFuture<'a, Result<JsonValue, Error>> {
+    Box::pin(async move {
     let procedure = node
         .get("procedure")
         .ok_or_else(|| Error::new("E2006", "Function node missing procedure"))?;
@@ -311,22 +326,20 @@ fn eval_function_internal(
                     .get("arguments")
                     .and_then(Value::as_array)
                     .ok_or_else(|| Error::new("E2007", "Function node missing arguments"))?;
-                let picture = arguments
-                    .first()
-                    .map(|arg| eval(arg, input, focus, functions, bindings))
-                    .transpose()?
-                    .and_then(|value| match value {
+                let picture = match arguments.first() {
+                    Some(arg) => match eval(arg, input, focus, functions, bindings).await? {
                         JsonValue::String(text) => Some(text),
                         _ => None,
-                    });
-                let timezone = arguments
-                    .get(1)
-                    .map(|arg| eval(arg, input, focus, functions, bindings))
-                    .transpose()?
-                    .and_then(|value| match value {
+                    },
+                    None => None,
+                };
+                let timezone = match arguments.get(1) {
+                    Some(arg) => match eval(arg, input, focus, functions, bindings).await? {
                         JsonValue::String(text) => Some(text),
                         _ => None,
-                    });
+                    },
+                    None => None,
+                };
                 return Ok(JsonValue::String(format_now_from_millis(
                     *eval_millis as i64,
                     picture.as_deref(),
@@ -334,9 +347,12 @@ fn eval_function_internal(
                 )));
             }
         }
+        if !has_function_override && raw == "eval" {
+            return eval_eval(node, input, focus, functions, bindings, applyto).await;
+        }
     }
 
-    let callable = resolve_callable(procedure, input, focus, functions, bindings)?;
+    let callable = resolve_callable(procedure, input, focus, functions, bindings).await?;
     let arguments = node
         .get("arguments")
         .and_then(Value::as_array)
@@ -344,16 +360,46 @@ fn eval_function_internal(
 
     let mut args = Vec::with_capacity(arguments.len());
     for arg in arguments {
-        args.push(eval(arg, input, focus, functions, bindings)?);
+        args.push(eval(arg, input, focus, functions, bindings).await?);
+    }
+
+    // A builtin may declare a signature with a context (`-`) modifier; in that
+    // case argument validation injects the focus value for the missing first
+    // argument (e.g. `$uppercase()` or `$substringBefore(" ")` as a path step).
+    let builtin_signature = procedure
+        .get("value")
+        .and_then(Value::as_str)
+        .filter(|raw| {
+            !matches!(
+                bindings.get(*raw).or_else(|| bindings.get(format!("${raw}").as_str())),
+                Some(JsonValue::Function(_))
+            )
+        })
+        .and_then(builtin_signature);
+
+    if let Some(signature) = &builtin_signature {
+        if let Some(context_value) = applyto {
+            args.insert(0, context_value.clone());
+        }
+        let validated = signature.validate(args, focus).map_err(|err| {
+            let mut details = err.message.clone();
+            if let Some(position) = node.get("position").and_then(Value::as_i64) {
+                details.push_str(format!(";position:{position}").as_str());
+            }
+            if let Some(token) = procedure.get("value").and_then(Value::as_str) {
+                details.push_str(format!(";token:{token}").as_str());
+            }
+            Error::new(err.code, details)
+        })?;
+        let ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
+        return finish_call(callable, ctx, validated, node, procedure, focus).await;
     }
 
     let arity = callable.arity();
     if let Some(context_value) = applyto {
-        if args.is_empty() {
-            args.push(context_value.clone());
-        } else if arity.is_some() && args.len() < arity.unwrap_or(0) {
-            args.insert(0, context_value.clone());
-        }
+        // For `lhs ~> $func(...)` the lhs is always prepended as the first
+        // argument (matching the JSONata reference engine).
+        args.insert(0, context_value.clone());
     } else if args.is_empty() {
         if arity.is_none() || arity.unwrap_or(0) > 0 {
             args.push(focus.clone());
@@ -361,7 +407,22 @@ fn eval_function_internal(
     }
 
     let ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
-    match block_on(callable.call(ctx, args)) {
+    finish_call(callable, ctx, args, node, procedure, focus).await
+    })
+}
+
+/// Drives a callable to completion (resolving tail-call thunks) and decorates
+/// any error with the function's position/token, matching the reference engine.
+fn finish_call<'a>(
+    callable: JsonFunction,
+    ctx: FunctionContext,
+    args: Vec<JsonValue>,
+    node: &'a Value,
+    procedure: &'a Value,
+    focus: &'a JsonValue,
+) -> BoxFuture<'a, Result<JsonValue, Error>> {
+    Box::pin(async move {
+    match callable.call(ctx, args).await {
         Ok(mut value) => {
             let mut trampoline_steps = 0usize;
             while let JsonValue::Function(thunk) = &value {
@@ -375,7 +436,7 @@ fn eval_function_internal(
                     ));
                 }
                 let thunk_ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
-                value = block_on(thunk.call(thunk_ctx, Vec::new())).map_err(Error::from)?;
+                value = thunk.call(thunk_ctx, Vec::new()).await.map_err(Error::from)?;
                 trampoline_steps += 1;
             }
             Ok(value)
@@ -395,6 +456,126 @@ fn eval_function_internal(
             Err(Error::new(err.code, details))
         }
     }
+    })
+}
+
+/// Returns the parsed signature for a built-in function, if one is declared
+/// with a context (`-`) modifier or type constraints that affect evaluation.
+fn builtin_signature(name: &str) -> Option<super::signature::Signature> {
+    let sig = match name {
+        "string" => "<x-b?:s>",
+        "substring" => "<s-nn?:s>",
+        "substringBefore" => "<s-s:s>",
+        "substringAfter" => "<s-s:s>",
+        "lowercase" => "<s-:s>",
+        "uppercase" => "<s-:s>",
+        "length" => "<s-:n>",
+        "trim" => "<s-:s>",
+        "pad" => "<s-ns?:s>",
+        "contains" => "<s-(sf):b>",
+        "split" => "<s-(sf)n?:a<s>>",
+        "formatNumber" => "<n-so?:s>",
+        "formatBase" => "<n-n?:s>",
+        "number" => "<(nsb)-:n>",
+        "floor" => "<n-:n>",
+        "ceil" => "<n-:n>",
+        "round" => "<n-n?:n>",
+        "abs" => "<n-:n>",
+        "sqrt" => "<n-:n>",
+        "power" => "<n-n:n>",
+        "boolean" => "<x-:b>",
+        "not" => "<x-:b>",
+        "sift" => "<o-f?:o>",
+        "keys" => "<x-:a<s>>",
+        "lookup" => "<x-s:x>",
+        "spread" => "<x-:a<o>>",
+        "each" => "<o-f:a>",
+        "base64encode" => "<s-:s>",
+        "base64decode" => "<s-:s>",
+        "encodeUrlComponent" => "<s-:s>",
+        "encodeUrl" => "<s-:s>",
+        "decodeUrlComponent" => "<s-:s>",
+        "decodeUrl" => "<s-:s>",
+        "exists" => "<x:b>",
+        "type" => "<x:s>",
+        "map" => "<af>",
+        "filter" => "<af>",
+        "single" => "<af?>",
+        "sift" => "<o-f?:o>",
+        "each" => "<o-f:a>",
+        "sort" => "<af?:a>",
+        _ => return None,
+    };
+    super::signature::Signature::parse(sig)
+}
+
+fn eval_eval<'a>(
+    node: &'a Value,
+    input: &'a JsonValue,
+    focus: &'a JsonValue,
+    functions: &'a HashMap<String, JsonFunction>,
+    bindings: &'a Bindings,
+    applyto: Option<&'a JsonValue>,
+) -> BoxFuture<'a, Result<JsonValue, Error>> {
+    Box::pin(async move {
+    let arguments = node
+        .get("arguments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::new("E2007", "Function node missing arguments"))?;
+
+    // Evaluate the explicit arguments.
+    let mut args: Vec<JsonValue> = Vec::with_capacity(arguments.len());
+    for arg in arguments {
+        args.push(eval(arg, input, focus, functions, bindings).await?);
+    }
+
+    // Handle the chained application form `X ~> $eval(...)` where the lhs is
+    // prepended as the first argument.
+    if let Some(context_value) = applyto {
+        if args.is_empty() {
+            args.push(context_value.clone());
+        } else {
+            args.insert(0, context_value.clone());
+        }
+    }
+
+    let expr_arg = args.first().cloned().unwrap_or(JsonValue::Undefined);
+    let expr_str = match expr_arg {
+        JsonValue::String(text) => text,
+        JsonValue::Undefined => return Ok(JsonValue::Undefined),
+        _ => return Ok(JsonValue::Undefined),
+    };
+
+    // Determine the focus/input for the nested evaluation.
+    let nested_input = match args.get(1) {
+        Some(JsonValue::Undefined) | None => focus.clone(),
+        Some(other) => {
+            // If a JSON array is passed as focus, wrap it in a singleton
+            // sequence so it is treated as a single input value.
+            match other {
+                JsonValue::Array(array) if !array.is_sequence => {
+                    JsonValue::Array(JsonArray::new(vec![other.clone()], true, true))
+                }
+                _ => other.clone(),
+            }
+        }
+    };
+
+    let ast = match crate::parser::parse_expression(&expr_str, false) {
+        Ok(ast) => ast,
+        Err(err) => {
+            return Err(Error::new(
+                "D3120",
+                format!("Syntax error in expression passed to function eval: {}", err.code),
+            ));
+        }
+    };
+
+    match eval(&ast, &nested_input, &nested_input, functions, bindings).await {
+        Ok(value) => Ok(value),
+        Err(err) => Err(Error::new("D3121", err.message().to_owned())),
+    }
+    })
 }
 
 fn parse_timezone_offset(value: &str) -> Option<UtcOffset> {
@@ -465,13 +646,14 @@ fn format_now_from_millis(millis: i64, picture: Option<&str>, timezone: Option<&
     format_now_iso_utc(now)
 }
 
-pub(super) fn resolve_callable(
-    procedure: &Value,
-    input: &JsonValue,
-    focus: &JsonValue,
-    functions: &HashMap<String, JsonFunction>,
-    bindings: &Bindings,
-) -> Result<JsonFunction, Error> {
+pub(super) fn resolve_callable<'a>(
+    procedure: &'a Value,
+    input: &'a JsonValue,
+    focus: &'a JsonValue,
+    functions: &'a HashMap<String, JsonFunction>,
+    bindings: &'a Bindings,
+) -> BoxFuture<'a, Result<JsonFunction, Error>> {
+    Box::pin(async move {
     let procedure_type = procedure
         .get("type")
         .and_then(Value::as_str)
@@ -498,7 +680,7 @@ pub(super) fn resolve_callable(
                 .ok_or_else(|| Error::new("T1006", format!("Unknown function: {name}")))
         }
         "path" => {
-            let resolved = eval(procedure, input, focus, functions, bindings)?;
+            let resolved = eval(procedure, input, focus, functions, bindings).await?;
             if let JsonValue::Function(func) = resolved {
                 return Ok(func);
             }
@@ -512,35 +694,50 @@ pub(super) fn resolve_callable(
             }
 
             let step = &steps[0];
-            let name = step
-                .get("value")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim_start_matches('$')
-                .to_owned();
+            let raw = step.get("value").and_then(Value::as_str).unwrap_or_default();
+            let name = raw.trim_start_matches('$').to_owned();
 
-            functions
-                .get(name.as_str())
-                .cloned()
-                .ok_or_else(|| Error::new("T1006", "Procedure is not callable"))
+            // A `$`-prefixed path step refers to a function/variable.
+            if raw.starts_with('$') {
+                if let Some(JsonValue::Function(func)) = bindings.get(name.as_str()) {
+                    return Ok(func.clone());
+                }
+                return functions
+                    .get(name.as_str())
+                    .cloned()
+                    .ok_or_else(|| Error::new("T1006", "Procedure is not callable"));
+            }
+
+            // A bare name (no `$`) is a path lookup against the data, not a
+            // function reference. If it happens to name a built-in, the user
+            // most likely forgot the leading `$` (T1005).
+            if functions.contains_key(name.as_str()) || bindings.contains_key(name.as_str()) {
+                return Err(Error::new(
+                    "T1005",
+                    format!("Attempted to invoke a non-function. Did you mean ${name}?"),
+                ));
+            }
+            Err(Error::new("T1006", "Procedure is not callable"))
         }
         _ => {
-            let value = eval(procedure, input, focus, functions, bindings)?;
+            let value = eval(procedure, input, focus, functions, bindings).await?;
             match value {
                 JsonValue::Function(func) => Ok(func),
                 _ => Err(Error::new("T1006", "Procedure is not callable")),
             }
         }
     }
+    })
 }
 
-pub(super) fn eval_apply(
-    node: &Value,
-    input: &JsonValue,
-    focus: &JsonValue,
-    functions: &HashMap<String, JsonFunction>,
-    bindings: &Bindings,
-) -> Result<JsonValue, Error> {
+pub(super) fn eval_apply<'a>(
+    node: &'a Value,
+    input: &'a JsonValue,
+    focus: &'a JsonValue,
+    functions: &'a HashMap<String, JsonFunction>,
+    bindings: &'a Bindings,
+) -> BoxFuture<'a, Result<JsonValue, Error>> {
+    Box::pin(async move {
     let lhs = node
         .get("lhs")
         .ok_or_else(|| Error::new("E2009", "Apply node missing lhs"))?;
@@ -548,50 +745,112 @@ pub(super) fn eval_apply(
         .get("rhs")
         .ok_or_else(|| Error::new("E2010", "Apply node missing rhs"))?;
 
-    let base = eval(lhs, input, focus, functions, bindings)?;
+    let base = eval(lhs, input, focus, functions, bindings).await?;
 
     if rhs.get("type").and_then(Value::as_str) == Some("transform") {
-        return eval_transform_apply(rhs, input, &base, functions, bindings);
+        return eval_transform_apply(rhs, input, &base, functions, bindings).await;
     }
 
     if rhs.get("type").and_then(Value::as_str) == Some("function") {
-        let procedure = rhs
-            .get("procedure")
-            .ok_or_else(|| Error::new("E2011", "Apply function missing procedure"))?;
-        let callable = resolve_callable(procedure, input, &base, functions, bindings)?;
-
-        let mut args = vec![base.clone()];
-        if let Some(extra_args) = rhs.get("arguments").and_then(Value::as_array) {
-            for arg in extra_args {
-                args.push(eval(arg, input, focus, functions, bindings)?);
-            }
-        }
-
-        let ctx = FunctionContext::with_focus(JsonataFocus::new(base));
-        return block_on(callable.call(ctx, args)).map_err(Error::from);
+        return eval_function_with_applyto(rhs, input, focus, functions, bindings, &base).await;
     }
 
-    let candidate = eval(rhs, input, &base, functions, bindings)?;
+    let candidate = eval(rhs, input, &base, functions, bindings).await?;
     match candidate {
         JsonValue::Function(callable) => {
+            if let JsonValue::Function(first) = &base {
+                // Function chaining: `func1 ~> func2` builds the composition
+                // λ($x){ func2(func1($x)) }.
+                return Ok(JsonValue::Function(JsonFunction::new(Arc::new(
+                    ChainCallable {
+                        first: first.clone(),
+                        second: callable,
+                    },
+                ))));
+            }
             let ctx = FunctionContext::with_focus(JsonataFocus::new(base.clone()));
-            block_on(callable.call(ctx, vec![base])).map_err(Error::from)
+            callable.call(ctx, vec![base]).await.map_err(Error::from)
         }
-        _ => Err(Error::new("T1006", "Right side of apply is not callable")),
+        _ => Err(Error::new(
+            "T2006",
+            "The right side of the function application operator ~> must be a function",
+        )),
+    }
+    })
+}
+
+#[derive(Clone)]
+struct ChainCallable {
+    first: JsonFunction,
+    second: JsonFunction,
+}
+
+impl JsonCallable for ChainCallable {
+    fn call(
+        &self,
+        ctx: FunctionContext,
+        args: Vec<JsonValue>,
+    ) -> BoxFuture<'static, Result<JsonValue, crate::types::JsonError>> {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let focus = ctx
+            .focus()
+            .map(|focus| focus.input.clone())
+            .unwrap_or(JsonValue::Undefined);
+        Box::pin(async move {
+            let first_ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
+            let intermediate = first.call(first_ctx, args).await?;
+            let second_ctx = FunctionContext::with_focus(JsonataFocus::new(focus));
+            second.call(second_ctx, vec![intermediate]).await
+        })
+    }
+
+    fn arity(&self) -> Option<usize> {
+        self.first.arity()
+    }
+
+    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+        self
     }
 }
 
-pub(super) fn eval_partial(
-    node: &Value,
-    input: &JsonValue,
-    focus: &JsonValue,
-    functions: &HashMap<String, JsonFunction>,
-    bindings: &Bindings,
-) -> Result<JsonValue, Error> {
+pub(super) fn eval_partial<'a>(
+    node: &'a Value,
+    input: &'a JsonValue,
+    focus: &'a JsonValue,
+    functions: &'a HashMap<String, JsonFunction>,
+    bindings: &'a Bindings,
+) -> BoxFuture<'a, Result<JsonValue, Error>> {
+    Box::pin(async move {
     let procedure = node
         .get("procedure")
         .ok_or_else(|| Error::new("E2033", "Partial node missing procedure"))?;
-    let target = resolve_callable(procedure, input, focus, functions, bindings)?;
+    let target = resolve_callable(procedure, input, focus, functions, bindings).await.map_err(|_| {
+        // Distinguish "forgot the leading $" (the bare name matches a builtin
+        // or variable) from a genuinely unknown procedure.
+        let bare_name = if procedure.get("type").and_then(Value::as_str) == Some("path") {
+            procedure
+                .get("steps")
+                .and_then(Value::as_array)
+                .and_then(|steps| steps.first())
+                .and_then(|step| step.get("value"))
+                .and_then(Value::as_str)
+        } else {
+            procedure.get("value").and_then(Value::as_str)
+        };
+        if let Some(name) = bare_name {
+            let stripped = name.trim_start_matches('$');
+            if !name.starts_with('$')
+                && (functions.contains_key(stripped) || bindings.contains_key(stripped))
+            {
+                return Error::new(
+                    "T1007",
+                    format!("Attempted to partially apply a non-function. Did you mean ${stripped}?"),
+                );
+            }
+        }
+        Error::new("T1008", "Attempted to partially apply a non-function")
+    })?;
     let arguments = node
         .get("arguments")
         .and_then(Value::as_array)
@@ -605,7 +864,7 @@ pub(super) fn eval_partial(
             template.push(PartialArg::Placeholder);
             continue;
         }
-        template.push(PartialArg::Value(eval(arg, input, focus, functions, bindings)?));
+        template.push(PartialArg::Value(eval(arg, input, focus, functions, bindings).await?));
     }
 
     Ok(JsonValue::Function(JsonFunction::new(Arc::new(
@@ -615,4 +874,5 @@ pub(super) fn eval_partial(
             captured_focus: focus.clone(),
         },
     ))))
+    })
 }

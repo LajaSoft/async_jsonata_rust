@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use futures::future::BoxFuture;
 use serde_json::Value;
 
 use crate::error::Error;
@@ -13,6 +14,7 @@ mod expressions;
 mod lambda;
 mod ops;
 mod path;
+mod signature;
 mod transform;
 mod value;
 
@@ -41,16 +43,16 @@ fn monotonic_eval_millis() -> i64 {
     }
 }
 
-pub(crate) fn evaluate_expression(
+pub(crate) async fn evaluate_expression_async(
     ast: &Value,
     input: &JsonValue,
     functions: &HashMap<String, JsonFunction>,
 ) -> Result<JsonValue, Error> {
     let bindings = Bindings::new();
-    evaluate_expression_with_bindings(ast, input, functions, &bindings)
+    evaluate_expression_with_bindings_async(ast, input, functions, &bindings).await
 }
 
-pub(crate) fn evaluate_expression_with_bindings(
+pub(crate) async fn evaluate_expression_with_bindings_async(
     ast: &Value,
     input: &JsonValue,
     functions: &HashMap<String, JsonFunction>,
@@ -63,20 +65,40 @@ pub(crate) fn evaluate_expression_with_bindings(
             JsonValue::Number(monotonic_eval_millis() as f64),
         );
     }
-    eval(ast, input, input, functions, &eval_bindings)
+
+    // Mirror upstream JSONata: if the input document is a plain JSON array (not
+    // already a sequence) wrap it in a singleton outer-wrapper sequence so a
+    // relative path treats the whole array as a single context item. The root
+    // `$`/`$$` variables still resolve to the original (unwrapped) array via the
+    // outer-wrapper unwrapping in `eval_variable`.
+    // A previous evaluation may have left a tuple-stream ancestry carrier on the
+    // thread-local side channel; clear it so it cannot leak into this run.
+    path::clear_tuple_carrier();
+
+    let document = match input {
+        JsonValue::Array(array) if !array.is_sequence => JsonValue::Array(JsonArray::new(
+            vec![input.clone()],
+            true,
+            true,
+        )),
+        other => other.clone(),
+    };
+
+    eval(ast, &document, &document, functions, &eval_bindings).await
 }
 
-pub(super) fn eval(
-    node: &Value,
-    input: &JsonValue,
-    focus: &JsonValue,
-    functions: &HashMap<String, JsonFunction>,
-    bindings: &Bindings,
-) -> Result<JsonValue, Error> {
+pub(super) fn eval<'a>(
+    node: &'a Value,
+    input: &'a JsonValue,
+    focus: &'a JsonValue,
+    functions: &'a HashMap<String, JsonFunction>,
+    bindings: &'a Bindings,
+) -> BoxFuture<'a, Result<JsonValue, Error>> {
+    Box::pin(async move {
     let node_type = node.get("type").and_then(Value::as_str).unwrap_or_default();
 
     let mut result = match node_type {
-        "path" => path::eval_path(node, input, focus, functions, bindings),
+        "path" => path::eval_path(node, input, focus, functions, bindings).await,
         "name" => {
             let name = node
                 .get("value")
@@ -97,21 +119,33 @@ pub(super) fn eval(
         "value" => Ok(value::json_value_from_serde(
             node.get("value").unwrap_or(&Value::Null),
         )),
-        "regex" => callable::eval_regex(node, focus, bindings),
-        "function" => callable::eval_function(node, input, focus, functions, bindings),
-        "binary" => ops::eval_binary(node, input, focus, functions, bindings),
-        "apply" => callable::eval_apply(node, input, focus, functions, bindings),
-        "partial" => callable::eval_partial(node, input, focus, functions, bindings),
-        "block" => expressions::eval_block(node, input, focus, functions, bindings),
-        "unary" => expressions::eval_unary(node, input, focus, functions, bindings),
+        "regex" => callable::eval_regex(node, focus, bindings).await,
+        "function" => callable::eval_function(node, input, focus, functions, bindings).await,
+        "binary" => ops::eval_binary(node, input, focus, functions, bindings).await,
+        "apply" => callable::eval_apply(node, input, focus, functions, bindings).await,
+        "partial" => callable::eval_partial(node, input, focus, functions, bindings).await,
+        "block" => expressions::eval_block(node, input, focus, functions, bindings).await,
+        "unary" => expressions::eval_unary(node, input, focus, functions, bindings).await,
         "bind" => {
-            let (_, value) = expressions::eval_bind(node, input, focus, functions, bindings)?;
+            let (name, mut value) =
+                expressions::eval_bind(node, input, focus, functions, bindings).await?;
+            // A bind that is the sole body of a lambda (`function(){ $f := ... }`)
+            // is evaluated here rather than via `eval_block`; still rebind a
+            // bound function to its own name so it (and any nested closures it
+            // returns) can refer to itself recursively, matching the block path.
+            if let JsonValue::Function(function) = &value {
+                if let Some(rebound) = lambda::bind_recursive_name(function, &name) {
+                    value = JsonValue::Function(rebound);
+                }
+            }
             Ok(value)
         }
         "lambda" => lambda::eval_lambda(node, input, focus, functions, bindings),
-        "condition" => expressions::eval_condition(node, input, focus, functions, bindings),
+        "condition" => expressions::eval_condition(node, input, focus, functions, bindings).await,
         "wildcard" => Ok(path::apply_wildcard(focus)),
         "descendant" => Ok(path::apply_descendant(focus)),
+        "parent" => path::eval_parent(node, bindings),
+        "sort" => path::apply_sort_step(node, input, focus, functions, bindings).await,
         _ => Err(Error::new(
             "E2001",
             format!("Unsupported AST node type: {node_type}"),
@@ -121,13 +155,13 @@ pub(super) fn eval(
     if let Some(predicates) = node.get("predicate").and_then(Value::as_array) {
         for predicate in predicates {
             let expr = predicate.get("expr").unwrap_or(predicate);
-            result = path::apply_predicate_expr(expr, input, &result, functions, bindings)?;
+            result = path::apply_predicate_expr(expr, input, &result, functions, bindings).await?;
         }
     }
 
-    if node_type == "path" {
+    if node_type != "path" {
         if let Some(group) = node.get("group") {
-            result = path::apply_group_expression(group, input, &result, functions, bindings)?;
+            result = path::apply_group_expression(group, input, &result, functions, bindings).await?;
         }
     }
 
@@ -150,5 +184,25 @@ pub(super) fn eval(
         };
     }
 
+    // The `[]` postfix (`keepArray`) forces a singleton sequence to remain an
+    // array rather than being unwrapped (mirrors upstream `expr.keepArray`
+    // setting `result.keepSingleton`). Materialise the sequence (drop the
+    // `is_sequence` flag) so it survives later sequence normalisation.
+    let keep_array = node
+        .get("keepArray")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if keep_array {
+        if let JsonValue::Array(array) = &result {
+            if array.is_sequence {
+                return Ok(match array.elements.len() {
+                    0 => JsonValue::Undefined,
+                    _ => JsonValue::Array(JsonArray::new(array.elements.clone(), false, false)),
+                });
+            }
+        }
+    }
+
     Ok(ops::normalize_sequence(result))
+    })
 }

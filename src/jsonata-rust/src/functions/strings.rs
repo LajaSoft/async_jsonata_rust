@@ -754,6 +754,10 @@ pub fn uppercase(value: &JsonValue) -> Result<JsonValue, JsonError> {
     Ok(JsonValue::String(string_value.to_uppercase()))
 }
 
+/// Returns the Unicode code-point count of `value` (NOT the UTF-8 byte or
+/// UTF-16 length); astral characters count as one. Type/arity validation
+/// against the `<s-:n>` signature is performed by the evaluator before this is
+/// invoked.
 pub fn length(value: &JsonValue) -> Result<JsonValue, JsonError> {
     let string_value = match ensure_string(value, false)? {
         Some(str_val) => str_val,

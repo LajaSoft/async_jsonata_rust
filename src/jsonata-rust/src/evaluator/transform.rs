@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use futures::executor::block_on;
+use futures::future::BoxFuture;
 use serde_json::Value;
 
 use crate::error::Error;
@@ -10,13 +10,14 @@ use super::ops::{to_sequence, values_equal};
 use super::value::object_keys_from_value;
 use super::{eval, Bindings};
 
-pub(super) fn eval_transform_apply(
-    transform: &Value,
-    input: &JsonValue,
-    base: &JsonValue,
-    functions: &HashMap<String, JsonFunction>,
-    bindings: &Bindings,
-) -> Result<JsonValue, Error> {
+pub(super) fn eval_transform_apply<'a>(
+    transform: &'a Value,
+    input: &'a JsonValue,
+    base: &'a JsonValue,
+    functions: &'a HashMap<String, JsonFunction>,
+    bindings: &'a Bindings,
+) -> BoxFuture<'a, Result<JsonValue, Error>> {
+    Box::pin(async move {
     let mut target_base = base.clone();
     if let Some(clone_binding) = bindings
         .get("$clone")
@@ -27,10 +28,10 @@ pub(super) fn eval_transform_apply(
             return Err(Error::new("T2013", "The transform expression cloned the input using $clone(), but this was overridden by a non-function value"));
         };
         let ctx = FunctionContext::with_focus(JsonataFocus::new(base.clone()));
-        target_base = block_on(callable.call(ctx, vec![base.clone()])).map_err(Error::from)?;
+        target_base = callable.call(ctx, vec![base.clone()]).await.map_err(Error::from)?;
     } else if let Some(callable) = functions.get("clone") {
         let ctx = FunctionContext::with_focus(JsonataFocus::new(base.clone()));
-        target_base = block_on(callable.call(ctx, vec![base.clone()])).map_err(Error::from)?;
+        target_base = callable.call(ctx, vec![base.clone()]).await.map_err(Error::from)?;
     }
 
     let pattern = transform
@@ -48,7 +49,7 @@ pub(super) fn eval_transform_apply(
         .ok_or_else(|| Error::new("T2011", "Transform expression missing update clause"))?;
     let delete = transform.get("delete");
 
-    let matches_value = eval(pattern, input, &target_base, functions, bindings)?;
+    let matches_value = eval(pattern, input, &target_base, functions, bindings).await?;
     let matches = to_sequence(&matches_value);
     if matches.is_empty() {
         return Ok(target_base);
@@ -56,7 +57,7 @@ pub(super) fn eval_transform_apply(
 
     let mut ops = Vec::new();
     for target in matches {
-        let update_value = eval(update, input, &target, functions, bindings)?;
+        let update_value = eval(update, input, &target, functions, bindings).await?;
         let update_object = match update_value {
             JsonValue::Undefined => JsonObject(Vec::new()),
             JsonValue::Object(object) => object,
@@ -70,7 +71,7 @@ pub(super) fn eval_transform_apply(
 
         let mut delete_keys = Vec::new();
         if let Some(delete_expr) = delete {
-            let delete_value = eval(delete_expr, input, &target, functions, bindings)?;
+            let delete_value = eval(delete_expr, input, &target, functions, bindings).await?;
             delete_keys = object_keys_from_value(&delete_value);
             let valid_delete = matches!(
                 delete_value,
@@ -92,6 +93,7 @@ pub(super) fn eval_transform_apply(
     }
 
     Ok(apply_transform_ops(&target_base, &ops))
+    })
 }
 
 fn ast_contains_prototype_pollution_access(node: &Value) -> bool {
