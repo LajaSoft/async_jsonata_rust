@@ -501,8 +501,6 @@ fn builtin_signature(name: &str) -> Option<super::signature::Signature> {
         "map" => "<af>",
         "filter" => "<af>",
         "single" => "<af?>",
-        "sift" => "<o-f?:o>",
-        "each" => "<o-f:a>",
         "sort" => "<af?:a>",
         _ => return None,
     };

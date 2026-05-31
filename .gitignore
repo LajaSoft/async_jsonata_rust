@@ -4,7 +4,8 @@ src/jsonata-rust/target/
 .cargo/
 .corepack/
 tmp/
-core*
+core
+core.[0-9]*
 
 .pnpm-store/
 .docker/
