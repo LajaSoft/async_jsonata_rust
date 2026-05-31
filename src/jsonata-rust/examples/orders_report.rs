@@ -1,6 +1,5 @@
-//! A small "application" that turns a raw e-commerce JSON document into a
-//! summary report with a single complex JSONata expression, evaluated through
-//! the pure-Rust ASYNC engine.
+//! Turns a raw e-commerce JSON document into a summary report with a single
+//! complex JSONata expression, evaluated through the pure-Rust ASYNC engine.
 //!
 //! It demonstrates, in one expression:
 //!   - path navigation, predicates and projections (`orders`, `[gross >= 100]`, `.{...}`)
@@ -9,30 +8,29 @@
 //!   - the sort operator (`^(>price)`) and indexing
 //!   - higher-order functions and lambdas (`~> $map(function($o){...})`)
 //!   - block scope and local variables (`$orderTotal := ...`)
-//!   - a CUSTOM, user-registered ASYNC function (`$discount`) that the engine
-//!     awaits cooperatively (it yields `Poll::Pending` once, as a stand-in for
-//!     an async rate lookup) — proving custom async functions compose with the
-//!     async evaluator.
+//!   - a CUSTOM, user-registered ASYNC function (`$discount`) that simply
+//!     `.await`s its work — exactly how you'd call a DB/HTTP rate lookup.
 //!
-//! Run it with:
-//!   cargo run --example orders_report
+//! The interesting code is `async` and uses `.await`. `main` only hands the
+//! async entry point to an executor (`block_on`); under tokio/async-std you'd
+//! make `main` itself `async` and drop that one line.
+//!
+//! Run with: `cargo run --example orders_report`
 
 use std::any::Any;
 use std::sync::Arc;
-use std::task::Poll;
 
 use async_jsonata_rust::types::{FunctionContext, JsonCallable, JsonError, JsonFunction, JsonValue};
-use async_jsonata_rust::{Evaluator, FunctionRegistry};
-use futures::executor::block_on;
+use async_jsonata_rust::{Error, Evaluator, FunctionRegistry};
 use futures::future::BoxFuture;
 use serde_json::json;
 
 /// A user-defined async built-in: `$discount(amount, region)`.
 ///
-/// Returns `amount` reduced by a region-specific rate. The future deliberately
-/// yields `Poll::Pending` once before resolving, simulating an awaited rate
-/// lookup (a DB/HTTP call in a real app). The async evaluator drives it to
-/// completion via `.await` — no blocking, no threads.
+/// Returns `amount` reduced by a region-specific rate. The body is a plain
+/// `async` block that `.await`s the rate lookup — stand in `lookup_rate` for a
+/// real DB/HTTP call and nothing else changes. The engine awaits this future
+/// cooperatively while evaluating the expression.
 #[derive(Clone)]
 struct DiscountFn;
 
@@ -51,22 +49,10 @@ impl JsonCallable for DiscountFn {
             _ => String::new(),
         };
 
-        let mut yielded = false;
-        Box::pin(futures::future::poll_fn(move |cx| {
-            if !yielded {
-                // Pretend we are awaiting an async rate service: yield control
-                // back to the executor once, then resume.
-                yielded = true;
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-            let rate = match region.as_str() {
-                "EU" => 0.10,
-                "US" => 0.05,
-                _ => 0.0,
-            };
-            Poll::Ready(Ok(JsonValue::Number(amount * (1.0 - rate))))
-        }))
+        Box::pin(async move {
+            let rate = lookup_rate(&region).await;
+            Ok(JsonValue::Number(amount * (1.0 - rate)))
+        })
     }
 
     fn arity(&self) -> Option<usize> {
@@ -75,6 +61,15 @@ impl JsonCallable for DiscountFn {
 
     fn as_any(&self) -> &(dyn Any + Send + Sync) {
         self
+    }
+}
+
+/// Stand-in for an async rate lookup (DB/HTTP in a real app).
+async fn lookup_rate(region: &str) -> f64 {
+    match region {
+        "EU" => 0.10,
+        "US" => 0.05,
+        _ => 0.0,
     }
 }
 
@@ -107,7 +102,8 @@ const REPORT_EXPR: &str = r#"
 )
 "#;
 
-fn main() {
+/// All the real work lives here, in async code driven by `.await`.
+async fn run() -> Result<(), Error> {
     let input_json = json!({
       "orders": [
         {
@@ -145,9 +141,7 @@ fn main() {
     registry.insert("discount", JsonFunction::new(Arc::new(DiscountFn)));
     let evaluator = Evaluator::new(registry);
 
-    let expression = evaluator
-        .parse(REPORT_EXPR)
-        .expect("report expression should parse");
+    let expression = evaluator.parse(REPORT_EXPR)?;
     let input = JsonValue::from_serde_json(&input_json);
 
     println!("== Input JSON ==");
@@ -155,11 +149,9 @@ fn main() {
     println!("== JSONata expression ==");
     println!("{}\n", REPORT_EXPR.trim());
 
-    // Drive the genuinely-async evaluator on a futures executor. The custom
-    // `$discount` function suspends (Poll::Pending) and is awaited cooperatively
-    // — exactly how it would behave under tokio/async-std.
-    let result = block_on(evaluator.evaluate_async(&expression, &input))
-        .expect("report expression should evaluate");
+    // The whole expression is evaluated asynchronously; just await it. The
+    // custom `$discount` function's own `.await` runs cooperatively inside.
+    let result = evaluator.evaluate_async(&expression, &input).await?;
 
     let output = result
         .to_serde_json()
@@ -167,4 +159,11 @@ fn main() {
 
     println!("== Report (async evaluation) ==");
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+fn main() {
+    // The only synchronous glue: hand the async entry point to an executor.
+    // Under tokio/async-std this becomes `#[tokio::main] async fn main()`.
+    futures::executor::block_on(run()).expect("report failed");
 }
