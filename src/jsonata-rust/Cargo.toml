@@ -1,6 +1,6 @@
 [package]
 name = "async_jsonata_rust"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version = "1.78"
 description = "Async-first JSONata parser/runtime crate with stable Rust API facade"
@@ -19,7 +19,7 @@ path = "src/lib.rs"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
-rand = "0.9"
+rand = "0.9.3"
 futures = "0.3"
 ryu = "1.0"
 base64 = "0.22"
