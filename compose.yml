@@ -18,3 +18,11 @@ services:
       - HOME=/workspace/.home
       - CARGO_HOME=/workspace/.cargo
       - PATH=/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+  # Standalone demo: builds a clean image that pulls async_jsonata_rust from
+  # crates.io (not this repo) and runs the orders_report example.
+  #   docker compose run --rm examples-app
+  examples-app:
+    build:
+      context: ./examples-app
+      dockerfile: Dockerfile
