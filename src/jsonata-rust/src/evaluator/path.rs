@@ -35,12 +35,6 @@ pub(super) fn eval_parent(node: &Value, bindings: &Bindings) -> Result<JsonValue
     Ok(bindings.get(label).cloned().unwrap_or(JsonValue::Undefined))
 }
 
-fn path_has_tuple_step(steps: &[Value]) -> bool {
-    steps
-        .iter()
-        .any(|step| step.get("tuple").and_then(Value::as_bool) == Some(true))
-}
-
 pub(super) fn eval_path<'a>(
     node: &'a Value,
     input: &'a JsonValue,

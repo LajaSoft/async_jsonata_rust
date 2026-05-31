@@ -1,6 +1,6 @@
 use time::{OffsetDateTime, UtcOffset};
 
-use crate::types::{JsonError, JsonObject, JsonValue};
+use crate::types::{JsonObject, JsonValue};
 
 pub(super) fn json_value_to_number(value: &JsonValue) -> Option<f64> {
     match value {
@@ -75,38 +75,6 @@ pub(super) fn format_now_custom(now: OffsetDateTime, timezone: Option<&str>) -> 
         tz_hours,
         tz_minutes
     )
-}
-
-pub(super) fn sum_json_value(value: &JsonValue) -> Result<JsonValue, JsonError> {
-    match value {
-        JsonValue::Undefined | JsonValue::Null => Ok(JsonValue::Undefined),
-        JsonValue::Array(array) => {
-            if array.elements.is_empty() {
-                return Ok(JsonValue::Undefined);
-            }
-
-            let mut total = 0.0;
-            for element in &array.elements {
-                let Some(number) = json_value_to_number(element) else {
-                    return Err(JsonError::new(
-                        "D3050",
-                        "$sum() expects the input array to contain only numeric values",
-                    ));
-                };
-                total += number;
-            }
-            Ok(JsonValue::Number(total))
-        }
-        other => {
-            let Some(number) = json_value_to_number(other) else {
-                return Err(JsonError::new(
-                    "D3050",
-                    "$sum() expects a numeric argument or an array of numerics",
-                ));
-            };
-            Ok(JsonValue::Number(number))
-        }
-    }
 }
 
 pub(super) fn clone_json_value(value: &JsonValue) -> JsonValue {

@@ -15,8 +15,6 @@ struct Param {
     /// Base type symbol for this parameter (`s`, `n`, `a`, `f`, ...). `(` for a
     /// choice group.
     type_symbol: char,
-    /// `true` when this is an array parameter (`a`).
-    is_array: bool,
     /// Optional contained-type for array/function parameters (e.g. `n` in `a<n>`).
     subtype: Option<String>,
     /// When `true`, the context value is substituted if the argument is missing.
@@ -96,7 +94,6 @@ impl Signature {
                     pending = Some(Param {
                         regex: format!("[{symbol}m]"),
                         type_symbol: symbol,
-                        is_array: false,
                         subtype: None,
                         context: false,
                         context_regex: None,
@@ -107,7 +104,6 @@ impl Signature {
                     pending = Some(Param {
                         regex: "[asnblfom]".to_owned(),
                         type_symbol: 'a',
-                        is_array: true,
                         subtype: None,
                         context: false,
                         context_regex: None,
@@ -118,7 +114,6 @@ impl Signature {
                     pending = Some(Param {
                         regex: "f".to_owned(),
                         type_symbol: 'f',
-                        is_array: false,
                         subtype: None,
                         context: false,
                         context_regex: None,
@@ -129,7 +124,6 @@ impl Signature {
                     pending = Some(Param {
                         regex: "[asnblom]".to_owned(),
                         type_symbol: 'j',
-                        is_array: false,
                         subtype: None,
                         context: false,
                         context_regex: None,
@@ -140,7 +134,6 @@ impl Signature {
                     pending = Some(Param {
                         regex: "[asnblfom]".to_owned(),
                         type_symbol: 'x',
-                        is_array: false,
                         subtype: None,
                         context: false,
                         context_regex: None,
@@ -158,7 +151,6 @@ impl Signature {
                     pending = Some(Param {
                         regex: format!("[{choice}m]"),
                         type_symbol: '(',
-                        is_array: false,
                         subtype: None,
                         context: false,
                         context_regex: None,

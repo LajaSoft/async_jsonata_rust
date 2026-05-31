@@ -260,16 +260,6 @@ fn is_order_comparable(value: &JsonValue) -> bool {
     matches!(value, JsonValue::String(_) | JsonValue::Number(_))
 }
 
-pub(super) fn to_number(value: &JsonValue) -> Option<f64> {
-    match value {
-        JsonValue::Number(n) => Some(*n),
-        JsonValue::Bool(true) => Some(1.0),
-        JsonValue::Bool(false) => Some(0.0),
-        JsonValue::String(s) => s.parse::<f64>().ok(),
-        _ => None,
-    }
-}
-
 pub(super) fn values_equal(left: &JsonValue, right: &JsonValue) -> bool {
     match (left, right) {
         (JsonValue::Undefined, JsonValue::Undefined) => false,
