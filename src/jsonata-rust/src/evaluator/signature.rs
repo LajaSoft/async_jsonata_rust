@@ -19,8 +19,11 @@ struct Param {
     subtype: Option<String>,
     /// When `true`, the context value is substituted if the argument is missing.
     context: bool,
-    /// Pre-compiled regex used to test the context value's type symbol.
-    context_regex: Option<String>,
+    /// Pre-compiled regex used to test the context value's type symbol. Compiled
+    /// once at parse time; compiling it per `validate` call used to dominate the
+    /// cost of mapping a context-taking built-in (e.g. `$string`) over a large
+    /// sequence.
+    context_regex: Option<Regex>,
 }
 
 #[derive(Clone)]
@@ -160,7 +163,7 @@ impl Signature {
                 '-' => {
                     if let Some(p) = pending.as_mut() {
                         p.context = true;
-                        p.context_regex = Some(format!("^{}$", p.regex));
+                        p.context_regex = Regex::new(&format!("^{}$", p.regex)).ok();
                         p.regex.push('?');
                     }
                 }
@@ -222,7 +225,6 @@ impl Signature {
                     let context_ok = param
                         .context_regex
                         .as_ref()
-                        .and_then(|r| Regex::new(r).ok())
                         .map(|r| r.is_match(&context_type))
                         .unwrap_or(false);
                     if context_ok {

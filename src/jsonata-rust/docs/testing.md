@@ -5,7 +5,7 @@
 2. Parser/runtime integration tests: `tests/native_wrapper.rs`.
 3. Async behavior tests: `tests/async_runtime.rs`.
 4. Regression tests by bug-id: `tests/regressions.rs`.
-5. Differential checks vs `jsonata-js`: `tests/golden_suite.rs` (`#[ignore]`, requires Node.js).
+5. Official JSONata compatibility suite: `tests/official_suite.rs`.
 
 ## Quality gates
 - `cargo fmt --all --check`
@@ -13,6 +13,5 @@
 - `cargo test --all-targets --all-features`
 - `cargo test --doc --all-features`
 
-## Differential execution
-Run manually when Node.js environment is available:
-`cargo test differential_matches_jsonata_js_reference -- --ignored`
+The former Node.js differential test was removed with the bundled JavaScript
+runtime. `tests/golden_suite.rs` now provides parser smoke coverage only.

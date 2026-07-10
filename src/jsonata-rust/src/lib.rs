@@ -91,7 +91,7 @@ pub mod parser;
 pub mod registry;
 pub mod types;
 
-pub use api::{Evaluator, Expression, FunctionRegistry, Parser};
+pub use api::{Evaluator, Expression, FunctionRegistry, Parser, DEFAULT_SYNC_STACK_SIZE};
 pub use error::Error;
 
 pub use parser::{

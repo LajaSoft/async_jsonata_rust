@@ -8,30 +8,42 @@ use crate::parser;
 use crate::registry;
 use crate::types::{JsonFunction, JsonValue};
 
-/// Stack size (bytes) for the thread that drives the sync evaluation facade.
+/// Initial stack size (bytes) for the thread that drives the sync evaluation
+/// facade.
 ///
-/// The evaluator is now `.await`-driven end to end: deeply recursive JSONata
-/// (e.g. recursive lambdas / higher-order functions) builds a correspondingly
-/// deep chain of boxed `eval` futures, and polling that chain consumes native
-/// stack proportional to the recursion depth. The old engine sidestepped this
-/// by spawning a fresh OS thread *per lambda call*; we instead drive the whole
-/// top-level future once on a single generously sized stack. This only affects
-/// the synchronous facade — `evaluate_async` runs on the caller's executor and
-/// leaves the stack policy to them.
-const SYNC_FACADE_STACK_SIZE: usize = 512 * 1024 * 1024;
+/// The evaluator is `.await`-driven end to end: deeply recursive JSONata
+/// (recursive lambdas / higher-order functions) builds a correspondingly deep
+/// chain of boxed `eval` futures, and polling that chain consumes native stack
+/// proportional to the recursion depth. Rather than pre-reserving a huge stack
+/// to survive the worst case (the old approach used hundreds of MiB and still
+/// hard-crashed once a recursion outran it), the evaluator now **grows the stack
+/// on demand** while polling (see `GrowStack` in `evaluator.rs`). So this is only
+/// the *base* stack for the worker thread — an ordinary 8 MiB, like a normal OS
+/// thread — and deep recursion allocates further segments as needed, bounded by
+/// the non-tail recursion guard rather than by a fixed stack size. Callers can
+/// still tune the base per evaluator. This only affects the synchronous facade —
+/// `evaluate_async` uses the caller's executor (which grows the same way).
+pub const DEFAULT_SYNC_STACK_SIZE: usize = 8 * 1024 * 1024;
 
-/// Drives `future` to completion on a dedicated large-stack thread, returning
-/// its result. Uses `std::thread::scope` so the future may borrow non-`'static`
-/// data (the expression AST, input document and bindings).
-fn block_on_large_stack<F>(future: F) -> Result<JsonValue, Error>
+/// Drives `future` to completion on a dedicated worker thread, returning its
+/// result. Uses `std::thread::scope` so the future may borrow non-`'static`
+/// data (the expression AST, input document and bindings), and so a sync call
+/// made from inside an async runtime does not block that runtime's own thread.
+/// The worker starts with `stack_size` bytes and grows on demand during polling.
+fn block_on_worker<F>(future: F, stack_size: usize) -> Result<JsonValue, Error>
 where
     F: std::future::Future<Output = Result<JsonValue, Error>> + Send,
 {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
-            .stack_size(SYNC_FACADE_STACK_SIZE)
+            .stack_size(stack_size)
             .spawn_scoped(scope, || futures::executor::block_on(future))
-            .expect("spawn evaluation worker thread")
+            .map_err(|error| {
+                Error::new(
+                    "U1002",
+                    format!("Failed to spawn synchronous evaluation thread: {error}"),
+                )
+            })?
             .join()
             .unwrap_or_else(|_| {
                 Err(Error::new(
@@ -304,9 +316,16 @@ impl FunctionRegistry {
 /// assert_eq!(result?, async_jsonata_rust::JsonValue::Number(1.0));
 /// # Ok::<(), async_jsonata_rust::Error>(())
 /// ```
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Evaluator {
     functions: FunctionRegistry,
+    sync_stack_size: usize,
+}
+
+impl Default for Evaluator {
+    fn default() -> Self {
+        Self::new(FunctionRegistry::default())
+    }
 }
 
 impl Evaluator {
@@ -318,7 +337,10 @@ impl Evaluator {
     /// assert!(evaluator.function_registry().is_empty());
     /// ```
     pub fn new(functions: FunctionRegistry) -> Self {
-        Self { functions }
+        Self {
+            functions,
+            sync_stack_size: DEFAULT_SYNC_STACK_SIZE,
+        }
     }
 
     /// Creates evaluator with built-in registry.
@@ -330,6 +352,30 @@ impl Evaluator {
     /// ```
     pub fn with_builtins() -> Self {
         Self::new(FunctionRegistry::with_builtins())
+    }
+
+    /// Sets the initial OS thread stack size used by synchronous evaluation
+    /// methods.
+    ///
+    /// The default is [`DEFAULT_SYNC_STACK_SIZE`]. This is only the *base* stack:
+    /// the evaluator grows the native stack on demand while polling, so deep
+    /// recursion no longer requires a large base here. Async evaluation methods
+    /// use the caller's executor and ignore this setting.
+    ///
+    /// # Examples
+    /// ```rust
+    /// let evaluator = async_jsonata_rust::Evaluator::with_builtins()
+    ///     .with_sync_stack_size(32 * 1024 * 1024);
+    /// assert_eq!(evaluator.sync_stack_size(), 32 * 1024 * 1024);
+    /// ```
+    pub fn with_sync_stack_size(mut self, stack_size: usize) -> Self {
+        self.sync_stack_size = stack_size;
+        self
+    }
+
+    /// Returns the configured synchronous evaluation thread stack size.
+    pub fn sync_stack_size(&self) -> usize {
+        self.sync_stack_size
     }
 
     /// Parses expression using stable parser API.
@@ -356,7 +402,7 @@ impl Evaluator {
     /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
     pub fn evaluate(&self, expression: &Expression, input: &JsonValue) -> Result<JsonValue, Error> {
-        block_on_large_stack(self.evaluate_async(expression, input))
+        block_on_worker(self.evaluate_async(expression, input), self.sync_stack_size)
     }
 
     /// Asynchronously evaluates a parsed expression against input JSON.
@@ -413,7 +459,10 @@ impl Evaluator {
         input: &JsonValue,
         bindings: &HashMap<String, JsonValue>,
     ) -> Result<JsonValue, Error> {
-        block_on_large_stack(self.evaluate_with_bindings_async(expression, input, bindings))
+        block_on_worker(
+            self.evaluate_with_bindings_async(expression, input, bindings),
+            self.sync_stack_size,
+        )
     }
 
     /// Asynchronously evaluates a parsed expression with external variable

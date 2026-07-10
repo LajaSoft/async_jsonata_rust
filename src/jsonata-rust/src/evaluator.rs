@@ -1,5 +1,8 @@
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::task::{Context, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::future::BoxFuture;
@@ -87,6 +90,43 @@ pub(crate) async fn evaluate_expression_with_bindings_async(
     eval(ast, &document, &document, functions, &eval_bindings).await
 }
 
+/// Grow the native stack when fewer than this many bytes remain. Sized to
+/// comfortably cover the synchronous helper frames between two consecutive
+/// `eval` calls (path / step / dispatch machinery), which are the recursion
+/// points that consume stack.
+const STACK_RED_ZONE: usize = 1024 * 1024;
+
+/// Size of each fresh stack segment allocated on demand when the red zone is
+/// hit. Deep recursion chains several of these together as needed.
+const STACK_GROW_SIZE: usize = 8 * 1024 * 1024;
+
+/// Wraps a future so every poll runs with a guaranteed minimum of native stack,
+/// allocating a fresh segment on demand (via `stacker`) when the remaining stack
+/// drops into the red zone.
+///
+/// Because the whole evaluator is a chain of boxed `eval` futures, polling a
+/// deeply nested expression consumes native stack proportional to the recursion
+/// depth. Wrapping each `eval` lets those expressions run on a small base stack
+/// that grows only as needed — replacing the previous approach of pre-reserving
+/// a single enormous (hundreds of MiB) stack, which both wasted address space
+/// and still hard-crashed once a recursion outran it. The first `maybe_grow` in
+/// a poll cascade establishes the stack limit, so the many nested `eval`s within
+/// it merely perform a cheap remaining-stack check and never re-grow.
+struct GrowStack<F> {
+    inner: F,
+}
+
+impl<F: Future> Future for GrowStack<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        // SAFETY: standard pin projection — `inner` is structurally pinned and
+        // never moved out of `self`.
+        let inner = unsafe { self.map_unchecked_mut(|slot| &mut slot.inner) };
+        stacker::maybe_grow(STACK_RED_ZONE, STACK_GROW_SIZE, || inner.poll(cx))
+    }
+}
+
 pub(super) fn eval<'a>(
     node: &'a Value,
     input: &'a JsonValue,
@@ -94,7 +134,7 @@ pub(super) fn eval<'a>(
     functions: &'a HashMap<String, JsonFunction>,
     bindings: &'a Bindings,
 ) -> BoxFuture<'a, Result<JsonValue, Error>> {
-    Box::pin(async move {
+    Box::pin(GrowStack { inner: async move {
     let node_type = node.get("type").and_then(Value::as_str).unwrap_or_default();
 
     let mut result = match node_type {
@@ -204,5 +244,5 @@ pub(super) fn eval<'a>(
     }
 
     Ok(ops::normalize_sequence(result))
-    })
+    } })
 }

@@ -341,7 +341,7 @@ pub async fn sort(
                 Some(item.clone()),
                 None,
             );
-            let decision = callable.call(ctx.clone(), args).await?;
+            let decision = callable.call_forced(ctx.clone(), args).await?;
             let should_swap = matches!(boolean(&decision), JsonValue::Bool(true));
             if !should_swap {
                 break;
@@ -427,7 +427,7 @@ pub async fn map(
             Some(container.clone()),
         );
 
-        let value = callable.call(ctx.clone(), args).await?;
+        let value = callable.call_forced(ctx.clone(), args).await?;
         if !value.is_undefined() {
             results.push(value);
         }
@@ -472,7 +472,7 @@ pub async fn filter(
             Some(JsonValue::Number(index as f64)),
             Some(container.clone()),
         );
-        let predicate = callable.call(ctx.clone(), args).await?;
+        let predicate = callable.call_forced(ctx.clone(), args).await?;
         if matches!(boolean(&predicate), JsonValue::Bool(true)) {
             results.push(entry.clone());
         }
@@ -519,7 +519,7 @@ pub async fn single(
                 Some(JsonValue::Number(index as f64)),
                 Some(container.clone()),
             );
-            let value = callable.call(ctx.clone(), args).await?;
+            let value = callable.call_forced(ctx.clone(), args).await?;
             matches!(boolean(&value), JsonValue::Bool(true))
         } else {
             true
@@ -603,7 +603,7 @@ pub async fn fold_left(
         if arity >= 4 {
             args.push(container.clone());
         }
-        accumulator = callable.call(ctx.clone(), args).await?;
+        accumulator = callable.call_forced(ctx.clone(), args).await?;
         index += 1;
     }
 
@@ -638,7 +638,7 @@ pub async fn each(
                     Some(JsonValue::String(key.clone())),
                     Some(container.clone()),
                 );
-                let result = callable.call(ctx.clone(), args).await?;
+                let result = callable.call_forced(ctx.clone(), args).await?;
                 if !result.is_undefined() {
                     results.push(result);
                 }
@@ -653,7 +653,7 @@ pub async fn each(
                     Some(JsonValue::String(index.to_string())),
                     Some(container.clone()),
                 );
-                let result = callable.call(ctx.clone(), args).await?;
+                let result = callable.call_forced(ctx.clone(), args).await?;
                 if !result.is_undefined() {
                     results.push(result);
                 }
@@ -697,7 +697,7 @@ pub async fn sift(
                     Some(JsonValue::String(key.clone())),
                     Some(container.clone()),
                 );
-                let predicate = callable.call(ctx.clone(), args).await?;
+                let predicate = callable.call_forced(ctx.clone(), args).await?;
                 if matches!(boolean(&predicate), JsonValue::Bool(true)) {
                     result.push((key, value));
                 }
@@ -719,7 +719,7 @@ pub async fn sift(
                     Some(JsonValue::String(key.clone())),
                     Some(container.clone()),
                 );
-                let predicate = callable.call(ctx.clone(), args).await?;
+                let predicate = callable.call_forced(ctx.clone(), args).await?;
                 if matches!(boolean(&predicate), JsonValue::Bool(true)) {
                     result.push((key, value.clone()));
                 }

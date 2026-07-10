@@ -26,6 +26,16 @@ base64 = "0.22"
 percent-encoding = "2.3"
 time = { version = "0.3", features = ["std"] }
 regex = "1.11"
+stacker = "0.1"
+
+[dev-dependencies]
+# Custom test harness for the data-driven official suite, so each group is a
+# named test the framework prints as it runs (instead of one opaque #[test]).
+libtest-mimic = "0.8"
+
+[[test]]
+name = "official_suite"
+harness = false
 
 [package.metadata.docs.rs]
 all-features = true

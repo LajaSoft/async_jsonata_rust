@@ -47,6 +47,7 @@ struct Case {
     data: Option<Value>,
     bindings: serde_json::Map<String, Value>,
     expected: Expectation,
+    unordered: bool,
 }
 
 fn resolve_data(spec: &Value, datasets: &HashMap<String, Value>) -> Option<Value> {
@@ -55,9 +56,7 @@ fn resolve_data(spec: &Value, datasets: &HashMap<String, Value>) -> Option<Value
     }
     match spec.get("dataset") {
         Some(Value::Null) | None => None,
-        Some(Value::String(name)) => {
-            Some(datasets.get(name).expect("known dataset").clone())
-        }
+        Some(Value::String(name)) => Some(datasets.get(name).expect("known dataset").clone()),
         Some(other) => panic!("unexpected dataset field: {other}"),
     }
 }
@@ -66,7 +65,10 @@ fn parse_case(spec: &Value, group_dir: &Path, datasets: &HashMap<String, Value>)
     let expr = if let Some(file) = spec.get("expr-file").and_then(Value::as_str) {
         fs::read_to_string(group_dir.join(file)).expect("read expr-file")
     } else {
-        spec.get("expr").and_then(Value::as_str).unwrap_or("").to_string()
+        spec.get("expr")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
     };
     let data = resolve_data(spec, datasets);
     let bindings = spec
@@ -81,11 +83,26 @@ fn parse_case(spec: &Value, group_dir: &Path, datasets: &HashMap<String, Value>)
     } else if let Some(code) = spec.get("code").and_then(Value::as_str) {
         Expectation::Code(code.to_string())
     } else if let Some(err) = spec.get("error").and_then(Value::as_object) {
-        Expectation::Code(err.get("code").and_then(Value::as_str).unwrap_or("").to_string())
+        Expectation::Code(
+            err.get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        )
     } else {
         Expectation::Undefined
     };
-    Case { expr, data, bindings, expected }
+    let unordered = spec
+        .get("unordered")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Case {
+        expr,
+        data,
+        bindings,
+        expected,
+        unordered,
+    }
 }
 
 fn load_group_cases(group_dir: &Path, datasets: &HashMap<String, Value>) -> Vec<Case> {
@@ -100,11 +117,16 @@ fn load_group_cases(group_dir: &Path, datasets: &HashMap<String, Value>) -> Vec<
     let mut cases = Vec::new();
     for path in files {
         let content = fs::read_to_string(&path).expect("read case");
-        // A handful of suite files embed lone UTF-16 surrogates that serde_json
-        // (unlike JS JSON.parse) rejects; skip those rather than abort.
         let spec: Value = match serde_json::from_str(&content) {
-            Ok(v) => v,
-            Err(_) => continue,
+            Ok(spec) => spec,
+            Err(_) if is_known_incompatible_fixture(group_dir, &path) => {
+                // Surface the skip through the standard test-framework channel
+                // (visible under `--nocapture` / on failure) rather than a
+                // `/dev/tty` write. libtest has no dedicated warning API.
+                eprintln!("warning: skipping known-incompatible fixture {}", path.display());
+                continue;
+            }
+            Err(error) => panic!("invalid suite fixture {}: {error}", path.display()),
         };
         match spec {
             Value::Array(items) => {
@@ -116,6 +138,17 @@ fn load_group_cases(group_dir: &Path, datasets: &HashMap<String, Value>) -> Vec<
         }
     }
     cases
+}
+
+fn is_known_incompatible_fixture(group_dir: &Path, path: &Path) -> bool {
+    let group = group_dir.file_name().and_then(|name| name.to_str());
+    let file = path.file_name().and_then(|name| name.to_str());
+
+    matches!(
+        (group, file),
+        (Some("function-encodeUrl"), Some("case002.json"))
+            | (Some("function-encodeUrlComponent"), Some("case002.json"))
+    )
 }
 
 fn scalar_eq(a: &Value, b: &Value) -> bool {
@@ -135,7 +168,8 @@ fn ordered_eq(a: &Value, b: &Value) -> bool {
         }
         (Value::Object(x), Value::Object(y)) => {
             x.len() == y.len()
-                && x.iter().all(|(k, v)| y.get(k).map_or(false, |ov| ordered_eq(v, ov)))
+                && x.iter()
+                    .all(|(k, v)| y.get(k).map_or(false, |ov| ordered_eq(v, ov)))
         }
         _ => scalar_eq(a, b),
     }
@@ -165,7 +199,8 @@ fn unordered_eq(a: &Value, b: &Value) -> bool {
         }
         (Value::Object(x), Value::Object(y)) => {
             x.len() == y.len()
-                && x.iter().all(|(k, v)| y.get(k).map_or(false, |ov| unordered_eq(v, ov)))
+                && x.iter()
+                    .all(|(k, v)| y.get(k).map_or(false, |ov| unordered_eq(v, ov)))
         }
         _ => scalar_eq(a, b),
     }
@@ -198,8 +233,9 @@ fn case_passes(case: &Case) -> bool {
         (_, Err(_)) => false,
         (Expectation::Undefined, Ok(v)) => v.to_serde_json().is_none(),
         (Expectation::Result(expected), Ok(v)) => match v.to_serde_json() {
-            Some(j) => ordered_eq(&j, expected) || unordered_eq(&j, expected),
-            None => expected.is_null(),
+            Some(j) if case.unordered => unordered_eq(&j, expected),
+            Some(j) => ordered_eq(&j, expected),
+            None => false,
         },
     }
 }
@@ -218,56 +254,54 @@ fn floor_for(group: &str) -> Option<usize> {
     }
 }
 
-const EXPECTED_TOTAL_FLOOR: usize = 1651;
+// The suite runs under a custom `libtest-mimic` harness (see `harness = false`
+// in Cargo.toml) so each group is a named test the framework reports as it runs
+// — e.g. `test suite::tail-recursion ... ok`. One trial per group keeps the
+// per-group floor semantics identical to the previous single `#[test]`: every
+// group must reach its floor (100% unless listed in `floor_for`). Since the
+// floors sum to the old total floor (1651), the aggregate is preserved too.
+fn main() {
+    let args = libtest_mimic::Arguments::from_args();
 
-#[test]
-fn official_suite_no_regressions() {
     let root = suite_root();
     assert!(
         root.exists(),
         "official suite not found at {} — is src/jsonata present?",
         root.display()
     );
-    let datasets = load_datasets(&root);
+    let datasets = std::sync::Arc::new(load_datasets(&root));
     let groups_dir = root.join("groups");
 
     let mut groups: Vec<String> = fs::read_dir(&groups_dir)
         .expect("groups dir")
         .filter_map(|e| {
             let p = e.ok()?.path();
-            p.is_dir().then(|| p.file_name().unwrap().to_string_lossy().to_string())
+            p.is_dir()
+                .then(|| p.file_name().unwrap().to_string_lossy().to_string())
         })
         .collect();
     groups.sort();
 
-    let mut total_pass = 0usize;
-    let mut total = 0usize;
-    let mut violations: Vec<String> = Vec::new();
+    let trials: Vec<libtest_mimic::Trial> = groups
+        .into_iter()
+        .map(|group| {
+            let datasets = std::sync::Arc::clone(&datasets);
+            let group_dir = groups_dir.join(&group);
+            libtest_mimic::Trial::test(format!("suite::{group}"), move || {
+                let cases = load_group_cases(&group_dir, &datasets);
+                let pass = cases.iter().filter(|c| case_passes(c)).count();
+                let floor = floor_for(&group).unwrap_or(cases.len());
+                if pass < floor {
+                    return Err(format!(
+                        "{pass}/{} passing — regressed below floor {floor}",
+                        cases.len()
+                    )
+                    .into());
+                }
+                Ok(())
+            })
+        })
+        .collect();
 
-    for group in &groups {
-        let cases = load_group_cases(&groups_dir.join(group), &datasets);
-        let pass = cases.iter().filter(|c| case_passes(c)).count();
-        total_pass += pass;
-        total += cases.len();
-
-        let floor = floor_for(group).unwrap_or(cases.len());
-        if pass < floor {
-            violations.push(format!(
-                "  {group}: {pass}/{} (regressed below floor {floor})",
-                cases.len()
-            ));
-        }
-    }
-
-    let summary = format!("official suite: {total_pass}/{total} passing");
-    assert!(
-        violations.is_empty(),
-        "{summary}\nregressions detected:\n{}",
-        violations.join("\n")
-    );
-    assert!(
-        total_pass >= EXPECTED_TOTAL_FLOOR,
-        "{summary}\ntotal dropped below floor {EXPECTED_TOTAL_FLOOR}"
-    );
-    println!("{summary}");
+    libtest_mimic::run(&args, trials).exit();
 }

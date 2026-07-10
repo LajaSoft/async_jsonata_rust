@@ -277,6 +277,46 @@ impl JsonFunction {
         self.callable.call(ctx, args)
     }
 
+    /// Calls this function and then drives any tail-call thunk it returns to a
+    /// final value, iteratively (O(1) native stack). This is the single
+    /// trampoline for tail-call optimisation: a lambda's `call` returns the raw
+    /// tail thunk without recursing, and callers that need the actual result
+    /// (function-call sites and higher-order built-ins like `$map`/`$reduce`)
+    /// funnel through here so a deep — or infinite — tail recursion neither grows
+    /// the stack nor is mistaken for a function-valued result.
+    pub fn call_forced(
+        &self,
+        ctx: FunctionContext,
+        args: Vec<JsonValue>,
+    ) -> BoxFuture<'static, Result<JsonValue, JsonError>> {
+        let this = self.clone();
+        // The focus to drive thunks with; thunks capture their own focus, so this
+        // only feeds signature/context validation, which thunks do not use.
+        let focus = ctx.focus().map(|handle| handle.input.clone());
+        Box::pin(async move {
+            let mut value = this.call(ctx, args).await?;
+            let mut steps = 0usize;
+            loop {
+                let thunk = match &value {
+                    JsonValue::Function(function) if function.callable.is_thunk() => function.clone(),
+                    _ => return Ok(value),
+                };
+                if steps >= MAX_TAIL_CALL_STEPS {
+                    return Err(JsonError::new(
+                        "U1001",
+                        "Stack overflow error: non-terminating recursive function call",
+                    ));
+                }
+                let thunk_ctx = match &focus {
+                    Some(input) => FunctionContext::with_focus(JsonataFocus::new(input.clone())),
+                    None => FunctionContext::empty(),
+                };
+                value = thunk.call(thunk_ctx, Vec::new()).await?;
+                steps += 1;
+            }
+        })
+    }
+
     pub fn arity(&self) -> Option<usize> {
         self.callable.arity()
     }
@@ -371,8 +411,26 @@ pub trait JsonCallable: Send + Sync + Any {
         None
     }
 
+    /// Whether this callable is a *tail-call thunk*: an arity-0 closure produced
+    /// by tail-call optimisation whose body is a deferred function call. Such a
+    /// value must be driven to completion by the trampoline in
+    /// [`JsonFunction::call_forced`] rather than treated as a result. Only the
+    /// lambda implementation overrides this.
+    fn is_thunk(&self) -> bool {
+        false
+    }
+
     fn as_any(&self) -> &(dyn Any + Send + Sync);
 }
+
+/// Maximum number of successive tail calls the trampoline drives before giving
+/// up with `U1001`. Tail recursion runs in O(1) native stack, so this is not a
+/// stack bound — it is only a backstop that terminates a non-productive infinite
+/// tail loop (mirroring the reference engine's timebox, which our harness does
+/// not enforce). It is set an order of magnitude above the deepest tail
+/// recursion in the compatibility suite (~6.5k) so it never caps a real
+/// computation, while still stopping a runaway loop promptly.
+pub(crate) const MAX_TAIL_CALL_STEPS: usize = 100_000;
 
 #[derive(Debug, Clone)]
 pub struct JsonError {

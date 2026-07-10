@@ -28,10 +28,10 @@ pub(super) fn eval_transform_apply<'a>(
             return Err(Error::new("T2013", "The transform expression cloned the input using $clone(), but this was overridden by a non-function value"));
         };
         let ctx = FunctionContext::with_focus(JsonataFocus::new(base.clone()));
-        target_base = callable.call(ctx, vec![base.clone()]).await.map_err(Error::from)?;
+        target_base = callable.call_forced(ctx, vec![base.clone()]).await.map_err(Error::from)?;
     } else if let Some(callable) = functions.get("clone") {
         let ctx = FunctionContext::with_focus(JsonataFocus::new(base.clone()));
-        target_base = callable.call(ctx, vec![base.clone()]).await.map_err(Error::from)?;
+        target_base = callable.call_forced(ctx, vec![base.clone()]).await.map_err(Error::from)?;
     }
 
     let pattern = transform

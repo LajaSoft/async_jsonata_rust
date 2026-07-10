@@ -9,7 +9,7 @@ use async_jsonata_rust::types::{
     FunctionContext, JsonArray, JsonCallable, JsonError, JsonFunction, JsonValue, JsonataArray,
     JsonataValue,
 };
-use async_jsonata_rust::Evaluator;
+use async_jsonata_rust::{Evaluator, DEFAULT_SYNC_STACK_SIZE};
 use futures::executor::block_on;
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
@@ -53,6 +53,92 @@ const COMPLEX_ALL_IN_EXPR: &str = r#"
   }
 )
 "#;
+
+#[test]
+fn evaluator_sync_stack_size_is_configurable() {
+    let default_evaluator = Evaluator::with_builtins();
+    assert_eq!(default_evaluator.sync_stack_size(), DEFAULT_SYNC_STACK_SIZE);
+
+    let custom_stack_size = 2 * 1024 * 1024;
+    let evaluator = Evaluator::with_builtins().with_sync_stack_size(custom_stack_size);
+    assert_eq!(evaluator.sync_stack_size(), custom_stack_size);
+
+    let expression = evaluator.parse("1 + 1").expect("expression should parse");
+    let result = evaluator
+        .evaluate(&expression, &JsonValue::Undefined)
+        .expect("custom-stack synchronous evaluation should succeed");
+    assert_eq!(result, JsonValue::Number(2.0));
+}
+
+#[cfg(not(debug_assertions))]
+#[test]
+fn large_path_projection_releases_completed_future_state() {
+    let evaluator = Evaluator::with_builtins().with_sync_stack_size(8 * 1024 * 1024);
+
+    let expression = evaluator
+        .parse("$count([1..2e5].$string())")
+        .expect("expression should parse");
+    let result = evaluator
+        .evaluate(&expression, &JsonValue::Undefined)
+        .expect("large projection should evaluate on the release stack");
+    assert_eq!(result, JsonValue::Number(200_000.0));
+}
+
+#[test]
+fn tail_recursion_does_not_accumulate_lambda_frames() {
+    let evaluator = Evaluator::with_builtins().with_sync_stack_size(256 * 1024);
+    let expression = evaluator
+        .parse(
+            "($even := function($n) {$n = 0 ? true : $odd($n-1)}; \
+             $odd := function($n) {$n = 0 ? false : $even($n-1)}; $odd(6555))",
+        )
+        .expect("expression should parse");
+    let result = evaluator
+        .evaluate(&expression, &JsonValue::Undefined)
+        .expect("tail recursion should evaluate without growing the native stack");
+    assert_eq!(result, JsonValue::Bool(true));
+}
+
+// A self-tail-recursive accumulator far deeper than the old fixed trampoline cap
+// (7_000). The single iterative trampoline runs it in O(1) native stack, so a
+// tiny base stack still completes it — proving tail recursion is not capped by a
+// stack size any more.
+#[test]
+fn deep_tail_recursion_runs_in_constant_stack() {
+    let evaluator = Evaluator::with_builtins().with_sync_stack_size(512 * 1024);
+    let expression = evaluator
+        .parse("($f := function($n, $acc){ $n = 0 ? $acc : $f($n - 1, $acc + 1) }; $f(50000, 0))")
+        .expect("expression should parse");
+    let result = evaluator
+        .evaluate(&expression, &JsonValue::Undefined)
+        .expect("deep tail recursion should evaluate on a small stack");
+    assert_eq!(result, JsonValue::Number(50000.0));
+}
+
+// Runaway recursion must terminate with U1001 instead of aborting the process.
+// The native stack grows on demand, so this is bounded by the recursion guard,
+// not by a pre-reserved stack. Covers both a non-tail loop (grows the stack) and
+// an infinite tail loop (driven by the trampoline in constant stack).
+#[test]
+fn runaway_recursion_reports_u1001_without_crashing() {
+    let evaluator = Evaluator::with_builtins();
+
+    let non_tail = evaluator
+        .parse("($inf := function($n){ $n + $inf($n - 1) }; $inf(5))")
+        .expect("expression should parse");
+    let err = evaluator
+        .evaluate(&non_tail, &JsonValue::Undefined)
+        .expect_err("infinite non-tail recursion should error");
+    assert_eq!(err.code(), "U1001");
+
+    let infinite_tail = evaluator
+        .parse("($inf := function(){ $inf() }; $inf())")
+        .expect("expression should parse");
+    let err = evaluator
+        .evaluate(&infinite_tail, &JsonValue::Undefined)
+        .expect_err("infinite tail recursion should error");
+    assert_eq!(err.code(), "U1001");
+}
 
 impl JsonCallable for DoubleCallable {
     fn call(

@@ -1,15 +1,13 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures::future::BoxFuture;
 use serde_json::Value;
 
 use crate::error::Error;
-use crate::types::{
-    FunctionContext, JsonCallable, JsonError, JsonFunction, JsonValue, JsonataFocus,
-};
+use crate::types::{FunctionContext, JsonCallable, JsonError, JsonFunction, JsonValue};
 
 use super::{eval, Bindings};
 
@@ -17,14 +15,16 @@ use super::{eval, Bindings};
 struct LambdaCallable {
     arg_names: Vec<String>,
     body: Value,
-    body_is_thunk: bool,
     is_thunk: bool,
     recursive_name: Option<String>,
     signature: Option<super::signature::Signature>,
     captured_input: JsonValue,
     captured_focus: JsonValue,
     captured_bindings: Bindings,
-    functions: HashMap<String, JsonFunction>,
+    /// The built-in function registry. It is immutable for the whole evaluation,
+    /// so it is shared via `Arc` rather than deep-cloned (≈60 `String` keys) on
+    /// every call — which matters for hot lambda loops and deep tail recursion.
+    functions: Arc<HashMap<String, JsonFunction>>,
     /// Shared, mutable environment frame for let-rec / mutual recursion. When a
     /// group of `:=` bindings in the same block defines sibling functions, every
     /// lambda in that group captures a clone of the same `Arc`; after all binds
@@ -34,8 +34,28 @@ struct LambdaCallable {
     shared_frame: Option<Arc<RwLock<Bindings>>>,
 }
 
-const MAX_LAMBDA_CALL_DEPTH: usize = 7_000;
-static LAMBDA_CALL_DEPTH: AtomicUsize = AtomicUsize::new(0);
+/// Guards *non-tail* recursion: the number of lambda calls that may be nested
+/// on the native call stack at once. Tail calls do not count against this (the
+/// trampoline in [`crate::types::JsonFunction::call_forced`] unwinds each one
+/// before making the next), so this only bounds genuine stack-consuming
+/// recursion. Exceeding it yields `U1001` instead of exhausting memory on a
+/// non-terminating recursive function. The native stack itself grows on demand
+/// (see `GrowStack` in `evaluator.rs`), so this — not a fixed stack size — is
+/// what bounds runaway non-tail recursion, and hence how much stack a runaway
+/// transiently grows before erroring. It is set comfortably above the deepest
+/// non-tail recursion in the compatibility suite (~150) and any realistic query
+/// (genuine non-tail recursion much deeper than this would exhaust memory in any
+/// engine), while keeping a runaway's transient footprint modest.
+pub(super) const MAX_LAMBDA_CALL_DEPTH: usize = 2_500;
+
+thread_local! {
+    /// Current non-tail lambda-call nesting depth. It is **thread-local**, not a
+    /// process-wide counter: the sync facade drives each evaluation on its own
+    /// worker thread, so a per-thread counter isolates concurrent evaluations
+    /// (a shared global would let one deep recursion trip another's guard). The
+    /// native call stack it mirrors is itself per-thread.
+    static LAMBDA_CALL_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
 
 /// Converts an internal `Error` (with a `String` code) into a `JsonError`
 /// (which carries a `&'static str` code) without per-call leaking. JSONata
@@ -65,9 +85,13 @@ struct LambdaDepthGuard;
 
 impl LambdaDepthGuard {
     fn enter() -> std::result::Result<Self, JsonError> {
-        let depth = LAMBDA_CALL_DEPTH.fetch_add(1, Ordering::SeqCst) + 1;
+        let depth = LAMBDA_CALL_DEPTH.with(|cell| {
+            let depth = cell.get() + 1;
+            cell.set(depth);
+            depth
+        });
         if depth > MAX_LAMBDA_CALL_DEPTH {
-            LAMBDA_CALL_DEPTH.fetch_sub(1, Ordering::SeqCst);
+            LAMBDA_CALL_DEPTH.with(|cell| cell.set(cell.get().saturating_sub(1)));
             return Err(JsonError::new(
                 "U1001",
                 "Stack overflow error: non-terminating recursive function call",
@@ -79,7 +103,7 @@ impl LambdaDepthGuard {
 
 impl Drop for LambdaDepthGuard {
     fn drop(&mut self) {
-        LAMBDA_CALL_DEPTH.fetch_sub(1, Ordering::SeqCst);
+        LAMBDA_CALL_DEPTH.with(|cell| cell.set(cell.get().saturating_sub(1)));
     }
 }
 
@@ -134,46 +158,41 @@ impl JsonCallable for LambdaCallable {
         let _ = ctx;
         let focus = self.captured_focus.clone();
         let body = self.body.clone();
-        let body_is_thunk = self.body_is_thunk;
+        let is_tail_thunk = self.is_thunk && self.arg_names.is_empty();
         let captured_input = self.captured_input.clone();
         let functions = self.functions.clone();
 
         Box::pin(async move {
             let _depth_guard = depth_guard;
-            let result: Result<JsonValue, Error> = async {
-                let mut value =
-                    eval(&body, &captured_input, &focus, &functions, &call_bindings).await?;
-
-                if body_is_thunk {
-                    // The body evaluated to a tail-call thunk (an arity-0 thunk
-                    // lambda). Force thunks repeatedly until a non-thunk value is
-                    // produced. Crucially we only continue while the result is
-                    // itself a thunk: a thunk-bodied lambda may legitimately
-                    // return a *real* function value (e.g. a Y/Z combinator
-                    // returns the recursive function), which must be returned
-                    // as-is rather than being force-called with no arguments.
-                    loop {
-                        let callable = match &value {
-                            JsonValue::Function(callable) if is_thunk_function(callable) => {
-                                callable.clone()
-                            }
-                            _ => break,
-                        };
-                        let ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
-                        value = callable.call(ctx, Vec::new()).await.map_err(Error::from)?;
-                    }
-                }
-
-                Ok(value)
-            }
-            .await;
-
-            result.map_err(error_to_json_error)
+            let result =
+                if is_tail_thunk && body.get("type").and_then(Value::as_str) == Some("function") {
+                    super::callable::eval_tail_call(
+                        &body,
+                        &captured_input,
+                        &focus,
+                        &functions,
+                        &call_bindings,
+                    )
+                    .await
+                } else {
+                    eval(&body, &captured_input, &focus, &functions, &call_bindings).await
+                };
+            // Return the body value as-is — including a tail-call thunk. The
+            // single trampoline in `JsonFunction::call_forced` drives thunks to a
+            // final value iteratively (O(1) native stack). Driving them here (by
+            // re-calling into this method) would instead recurse once per tail
+            // step and blow the stack on deep or infinite tail recursion.
+            let value = result.map_err(error_to_json_error)?;
+            Ok(value)
         })
     }
 
     fn arity(&self) -> Option<usize> {
         Some(self.arg_names.len())
+    }
+
+    fn is_thunk(&self) -> bool {
+        self.is_thunk
     }
 
     fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
@@ -204,12 +223,6 @@ pub(super) fn eval_lambda(
         .get("body")
         .cloned()
         .ok_or_else(|| Error::new("E2026", "Lambda missing body"))?;
-    let body_is_thunk = node
-        .get("thunk")
-        .and_then(Value::as_bool)
-        .or_else(|| body.get("thunk").and_then(Value::as_bool))
-        .unwrap_or(false);
-
     let signature = node
         .get("signature")
         .and_then(Value::as_str)
@@ -218,14 +231,13 @@ pub(super) fn eval_lambda(
     let callable = LambdaCallable {
         arg_names,
         body,
-        body_is_thunk,
         is_thunk: node.get("thunk").and_then(Value::as_bool).unwrap_or(false),
         recursive_name: None,
         signature,
         captured_input: input.clone(),
         captured_focus: focus.clone(),
         captured_bindings: bindings.clone(),
-        functions: functions.clone(),
+        functions: Arc::new(functions.clone()),
         shared_frame: None,
     };
 
@@ -275,15 +287,6 @@ pub(super) fn is_lambda_function(function: &JsonFunction) -> bool {
         .as_any()
         .downcast_ref::<LambdaCallable>()
         .is_some()
-}
-
-pub(super) fn is_thunk_function(function: &JsonFunction) -> bool {
-    function
-        .as_callable()
-        .as_any()
-        .downcast_ref::<LambdaCallable>()
-        .map(|lambda| lambda.is_thunk)
-        .unwrap_or(false)
 }
 
 fn extract_lambda_arg_name(arg: &Value) -> Option<String> {

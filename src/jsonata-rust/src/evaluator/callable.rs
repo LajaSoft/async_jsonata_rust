@@ -11,7 +11,6 @@ use crate::types::{
     FunctionContext, JsonArray, JsonCallable, JsonFunction, JsonObject, JsonValue, JsonataFocus,
 };
 
-use super::lambda;
 use super::transform::eval_transform_apply;
 use super::{eval, Bindings};
 
@@ -283,7 +282,17 @@ pub(super) fn eval_function<'a>(
     functions: &'a HashMap<String, JsonFunction>,
     bindings: &'a Bindings,
 ) -> BoxFuture<'a, Result<JsonValue, Error>> {
-    eval_function_internal(node, input, focus, functions, bindings, None)
+    eval_function_internal(node, input, focus, functions, bindings, None, true)
+}
+
+pub(super) fn eval_tail_call<'a>(
+    node: &'a Value,
+    input: &'a JsonValue,
+    focus: &'a JsonValue,
+    functions: &'a HashMap<String, JsonFunction>,
+    bindings: &'a Bindings,
+) -> BoxFuture<'a, Result<JsonValue, Error>> {
+    eval_function_internal(node, input, focus, functions, bindings, None, false)
 }
 
 pub(super) fn eval_function_with_applyto<'a>(
@@ -294,7 +303,7 @@ pub(super) fn eval_function_with_applyto<'a>(
     bindings: &'a Bindings,
     applyto: &'a JsonValue,
 ) -> BoxFuture<'a, Result<JsonValue, Error>> {
-    eval_function_internal(node, input, focus, functions, bindings, Some(applyto))
+    eval_function_internal(node, input, focus, functions, bindings, Some(applyto), true)
 }
 
 fn eval_function_internal<'a>(
@@ -304,6 +313,7 @@ fn eval_function_internal<'a>(
     functions: &'a HashMap<String, JsonFunction>,
     bindings: &'a Bindings,
     applyto: Option<&'a JsonValue>,
+    drive_thunks: bool,
 ) -> BoxFuture<'a, Result<JsonValue, Error>> {
     Box::pin(async move {
     let procedure = node
@@ -377,7 +387,7 @@ fn eval_function_internal<'a>(
         })
         .and_then(builtin_signature);
 
-    if let Some(signature) = &builtin_signature {
+    if let Some(signature) = builtin_signature {
         if let Some(context_value) = applyto {
             args.insert(0, context_value.clone());
         }
@@ -392,7 +402,7 @@ fn eval_function_internal<'a>(
             Error::new(err.code, details)
         })?;
         let ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
-        return finish_call(callable, ctx, validated, node, procedure, focus).await;
+        return finish_call(callable, ctx, validated, node, procedure, drive_thunks).await;
     }
 
     let arity = callable.arity();
@@ -407,40 +417,34 @@ fn eval_function_internal<'a>(
     }
 
     let ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
-    finish_call(callable, ctx, args, node, procedure, focus).await
+    finish_call(callable, ctx, args, node, procedure, drive_thunks).await
     })
 }
 
-/// Drives a callable to completion (resolving tail-call thunks) and decorates
-/// any error with the function's position/token, matching the reference engine.
+/// Invokes a callable and decorates any error with the function's
+/// position/token, matching the reference engine.
+///
+/// When `drive_thunks` is true (an ordinary call site) the result is driven to a
+/// final value through the single tail-call trampoline
+/// ([`JsonFunction::call_forced`]). When false (an `eval_tail_call` step) the raw
+/// result — possibly itself a tail-call thunk — is returned so the *outer*
+/// trampoline can drive it, which is what keeps tail recursion iterative.
 fn finish_call<'a>(
     callable: JsonFunction,
     ctx: FunctionContext,
     args: Vec<JsonValue>,
     node: &'a Value,
     procedure: &'a Value,
-    focus: &'a JsonValue,
+    drive_thunks: bool,
 ) -> BoxFuture<'a, Result<JsonValue, Error>> {
     Box::pin(async move {
-    match callable.call(ctx, args).await {
-        Ok(mut value) => {
-            let mut trampoline_steps = 0usize;
-            while let JsonValue::Function(thunk) = &value {
-                if !lambda::is_thunk_function(thunk) {
-                    break;
-                }
-                if trampoline_steps >= 1024 {
-                    return Err(Error::new(
-                        "U1001",
-                        "Stack overflow error: non-terminating recursive function call",
-                    ));
-                }
-                let thunk_ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
-                value = thunk.call(thunk_ctx, Vec::new()).await.map_err(Error::from)?;
-                trampoline_steps += 1;
-            }
-            Ok(value)
-        }
+    let outcome = if drive_thunks {
+        callable.call_forced(ctx, args).await
+    } else {
+        callable.call(ctx, args).await
+    };
+    match outcome {
+        Ok(value) => Ok(value),
         Err(err) => {
             let mut details = err.message.clone();
             if let Some(position) = node.get("position").and_then(Value::as_i64) {
@@ -461,50 +465,70 @@ fn finish_call<'a>(
 
 /// Returns the parsed signature for a built-in function, if one is declared
 /// with a context (`-`) modifier or type constraints that affect evaluation.
-fn builtin_signature(name: &str) -> Option<super::signature::Signature> {
-    let sig = match name {
-        "string" => "<x-b?:s>",
-        "substring" => "<s-nn?:s>",
-        "substringBefore" => "<s-s:s>",
-        "substringAfter" => "<s-s:s>",
-        "lowercase" => "<s-:s>",
-        "uppercase" => "<s-:s>",
-        "length" => "<s-:n>",
-        "trim" => "<s-:s>",
-        "pad" => "<s-ns?:s>",
-        "contains" => "<s-(sf):b>",
-        "split" => "<s-(sf)n?:a<s>>",
-        "formatNumber" => "<n-so?:s>",
-        "formatBase" => "<n-n?:s>",
-        "number" => "<(nsb)-:n>",
-        "floor" => "<n-:n>",
-        "ceil" => "<n-:n>",
-        "round" => "<n-n?:n>",
-        "abs" => "<n-:n>",
-        "sqrt" => "<n-:n>",
-        "power" => "<n-n:n>",
-        "boolean" => "<x-:b>",
-        "not" => "<x-:b>",
-        "sift" => "<o-f?:o>",
-        "keys" => "<x-:a<s>>",
-        "lookup" => "<x-s:x>",
-        "spread" => "<x-:a<o>>",
-        "each" => "<o-f:a>",
-        "base64encode" => "<s-:s>",
-        "base64decode" => "<s-:s>",
-        "encodeUrlComponent" => "<s-:s>",
-        "encodeUrl" => "<s-:s>",
-        "decodeUrlComponent" => "<s-:s>",
-        "decodeUrl" => "<s-:s>",
-        "exists" => "<x:b>",
-        "type" => "<x:s>",
-        "map" => "<af>",
-        "filter" => "<af>",
-        "single" => "<af?>",
-        "sort" => "<af?:a>",
-        _ => return None,
-    };
-    super::signature::Signature::parse(sig)
+///
+/// The compiled signatures (each of which owns a compiled `Regex`) are memoised
+/// in a process-wide table built on first use. Re-parsing them per call used to
+/// dominate the cost of mapping a built-in over a large sequence
+/// (e.g. `[1..2e5].$string()`), because `Signature::parse` compiles a regex.
+fn builtin_signature(name: &str) -> Option<&'static super::signature::Signature> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+
+    static SIGNATURES: OnceLock<HashMap<&'static str, super::signature::Signature>> =
+        OnceLock::new();
+
+    // Source signature strings; each is parsed exactly once into the table.
+    const SPECS: &[(&str, &str)] = &[
+        ("string", "<x-b?:s>"),
+        ("substring", "<s-nn?:s>"),
+        ("substringBefore", "<s-s:s>"),
+        ("substringAfter", "<s-s:s>"),
+        ("lowercase", "<s-:s>"),
+        ("uppercase", "<s-:s>"),
+        ("length", "<s-:n>"),
+        ("trim", "<s-:s>"),
+        ("pad", "<s-ns?:s>"),
+        ("contains", "<s-(sf):b>"),
+        ("split", "<s-(sf)n?:a<s>>"),
+        ("formatNumber", "<n-so?:s>"),
+        ("formatBase", "<n-n?:s>"),
+        ("number", "<(nsb)-:n>"),
+        ("floor", "<n-:n>"),
+        ("ceil", "<n-:n>"),
+        ("round", "<n-n?:n>"),
+        ("abs", "<n-:n>"),
+        ("sqrt", "<n-:n>"),
+        ("power", "<n-n:n>"),
+        ("boolean", "<x-:b>"),
+        ("not", "<x-:b>"),
+        ("sift", "<o-f?:o>"),
+        ("keys", "<x-:a<s>>"),
+        ("lookup", "<x-s:x>"),
+        ("spread", "<x-:a<o>>"),
+        ("each", "<o-f:a>"),
+        ("base64encode", "<s-:s>"),
+        ("base64decode", "<s-:s>"),
+        ("encodeUrlComponent", "<s-:s>"),
+        ("encodeUrl", "<s-:s>"),
+        ("decodeUrlComponent", "<s-:s>"),
+        ("decodeUrl", "<s-:s>"),
+        ("exists", "<x:b>"),
+        ("type", "<x:s>"),
+        ("map", "<af>"),
+        ("filter", "<af>"),
+        ("single", "<af?>"),
+        ("sort", "<af?:a>"),
+    ];
+
+    let table = SIGNATURES.get_or_init(|| {
+        SPECS
+            .iter()
+            .filter_map(|(name, sig)| {
+                super::signature::Signature::parse(sig).map(|parsed| (*name, parsed))
+            })
+            .collect()
+    });
+    table.get(name)
 }
 
 fn eval_eval<'a>(
@@ -767,7 +791,7 @@ pub(super) fn eval_apply<'a>(
                 ))));
             }
             let ctx = FunctionContext::with_focus(JsonataFocus::new(base.clone()));
-            callable.call(ctx, vec![base]).await.map_err(Error::from)
+            callable.call_forced(ctx, vec![base]).await.map_err(Error::from)
         }
         _ => Err(Error::new(
             "T2006",
@@ -797,7 +821,10 @@ impl JsonCallable for ChainCallable {
             .unwrap_or(JsonValue::Undefined);
         Box::pin(async move {
             let first_ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
-            let intermediate = first.call(first_ctx, args).await?;
+            // Drive the first function's result to a value before feeding it to
+            // the second; `second`'s own result is driven by whoever invoked the
+            // chain (always through `call_forced`).
+            let intermediate = first.call_forced(first_ctx, args).await?;
             let second_ctx = FunctionContext::with_focus(JsonataFocus::new(focus));
             second.call(second_ctx, vec![intermediate]).await
         })

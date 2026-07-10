@@ -180,7 +180,10 @@ async fn evaluate_matcher(
         Some(text) => args.push(JsonValue::String(text)),
         None => args.push(JsonValue::Undefined),
     }
-    let result = matcher.call(focus, args).await?;
+    // A user-supplied matcher's `next` closure is typically `function(){ … }`
+    // whose body is a tail call, i.e. a thunk. Drive it to a concrete match
+    // object rather than handing the raw thunk to `matcher_result_from_json`.
+    let result = matcher.call_forced(focus, args).await?;
     matcher_result_from_json(result)
 }
 
@@ -704,7 +707,7 @@ pub async fn replace_function(
                 };
                 let replacement_value = if let Some(function) = &replacement_fn {
                     let called = function
-                        .call(focus.clone(), vec![regex_match.callback_object()])
+                        .call_forced(focus.clone(), vec![regex_match.callback_object()])
                         .await?;
                     match called {
                         JsonValue::String(text) => text,
@@ -747,7 +750,7 @@ pub async fn replace_function(
                 result.push_str(&input_text[position..start]);
                 let replacement_value = if let Some(function) = &replacement_fn {
                     let called = function
-                        .call(focus.clone(), vec![matched.callback_object()])
+                        .call_forced(focus.clone(), vec![matched.callback_object()])
                         .await?;
                     match called {
                         JsonValue::String(text) => text,
