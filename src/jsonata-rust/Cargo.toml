@@ -1,6 +1,6 @@
 [package]
 name = "async_jsonata_rust"
-version = "0.3.3"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.78"
 description = "Async-first JSONata parser/runtime crate with stable Rust API facade"
@@ -32,6 +32,10 @@ stacker = "0.1"
 # Custom test harness for the data-driven official suite, so each group is a
 # named test the framework prints as it runs (instead of one opaque #[test]).
 libtest-mimic = "0.8"
+# `thread-pool` gives tests a real work-stealing multi-thread executor, needed to
+# exercise a single evaluation future migrating across threads (see
+# `tests/recursion_budget.rs`).
+futures = { version = "0.3", features = ["thread-pool"] }
 
 [[test]]
 name = "official_suite"

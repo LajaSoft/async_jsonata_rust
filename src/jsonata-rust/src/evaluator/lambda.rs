@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -7,7 +6,7 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 
 use crate::error::Error;
-use crate::types::{FunctionContext, JsonCallable, JsonError, JsonFunction, JsonValue};
+use crate::types::{Budget, FunctionContext, JsonCallable, JsonError, JsonFunction, JsonValue};
 
 use super::{eval, Bindings};
 
@@ -30,31 +29,10 @@ struct LambdaCallable {
     /// lambda in that group captures a clone of the same `Arc`; after all binds
     /// are evaluated, the block populates this frame with the final sibling
     /// values. At call time these overlay `captured_bindings`, so a function can
-    /// see siblings that were bound later in the same block (knot-tying).
-    shared_frame: Option<Arc<RwLock<Bindings>>>,
-}
-
-/// Guards *non-tail* recursion: the number of lambda calls that may be nested
-/// on the native call stack at once. Tail calls do not count against this (the
-/// trampoline in [`crate::types::JsonFunction::call_forced`] unwinds each one
-/// before making the next), so this only bounds genuine stack-consuming
-/// recursion. Exceeding it yields `U1001` instead of exhausting memory on a
-/// non-terminating recursive function. The native stack itself grows on demand
-/// (see `GrowStack` in `evaluator.rs`), so this — not a fixed stack size — is
-/// what bounds runaway non-tail recursion, and hence how much stack a runaway
-/// transiently grows before erroring. It is set comfortably above the deepest
-/// non-tail recursion in the compatibility suite (~150) and any realistic query
-/// (genuine non-tail recursion much deeper than this would exhaust memory in any
-/// engine), while keeping a runaway's transient footprint modest.
-pub(super) const MAX_LAMBDA_CALL_DEPTH: usize = 2_500;
-
-thread_local! {
-    /// Current non-tail lambda-call nesting depth. It is **thread-local**, not a
-    /// process-wide counter: the sync facade drives each evaluation on its own
-    /// worker thread, so a per-thread counter isolates concurrent evaluations
-    /// (a shared global would let one deep recursion trip another's guard). The
-    /// native call stack it mirrors is itself per-thread.
-    static LAMBDA_CALL_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// see siblings that were bound later in the same block (knot-tying). It is a
+    /// bare value map, not a `Bindings`: it only carries sibling values that are
+    /// merged into a real (budget-bearing) frame at call time.
+    shared_frame: Option<Arc<RwLock<HashMap<String, JsonValue>>>>,
 }
 
 /// Converts an internal `Error` (with a `String` code) into a `JsonError`
@@ -81,29 +59,36 @@ fn intern_code(code: &str) -> &'static str {
     leaked
 }
 
-struct LambdaDepthGuard;
+/// Guards *non-tail* recursion by counting the lambda calls nested on the native
+/// call stack at once. Tail calls do not count against it (the trampoline in
+/// [`crate::types::JsonFunction::call_forced`] unwinds each one before making the
+/// next), so it only bounds genuine stack-consuming recursion. Exceeding the
+/// evaluation's configured `max_non_tail_depth` yields `U1001` instead of
+/// exhausting memory on a non-terminating recursive function. The native stack
+/// itself grows on demand (see `GrowStack` in `evaluator.rs`), so this — not a
+/// fixed stack size — is what bounds runaway non-tail recursion.
+///
+/// The counter lives in the per-evaluation [`Budget`] (owned by the evaluation),
+/// **not** a `thread_local!`: under `evaluate_async` on a multi-thread executor
+/// the guard may be created and dropped on different threads as the future
+/// migrates, which would corrupt a per-thread counter. The `RAII` guard captures
+/// the same `Arc<Budget>` it entered, so `enter`/`drop` always adjust one cell.
+struct LambdaDepthGuard {
+    budget: Arc<Budget>,
+}
 
 impl LambdaDepthGuard {
-    fn enter() -> std::result::Result<Self, JsonError> {
-        let depth = LAMBDA_CALL_DEPTH.with(|cell| {
-            let depth = cell.get() + 1;
-            cell.set(depth);
-            depth
-        });
-        if depth > MAX_LAMBDA_CALL_DEPTH {
-            LAMBDA_CALL_DEPTH.with(|cell| cell.set(cell.get().saturating_sub(1)));
-            return Err(JsonError::new(
-                "U1001",
-                "Stack overflow error: non-terminating recursive function call",
-            ));
-        }
-        Ok(Self)
+    fn enter(budget: &Arc<Budget>) -> std::result::Result<Self, JsonError> {
+        budget.enter_non_tail()?;
+        Ok(Self {
+            budget: Arc::clone(budget),
+        })
     }
 }
 
 impl Drop for LambdaDepthGuard {
     fn drop(&mut self) {
-        LAMBDA_CALL_DEPTH.with(|cell| cell.set(cell.get().saturating_sub(1)));
+        self.budget.leave_non_tail();
     }
 }
 
@@ -113,7 +98,7 @@ impl JsonCallable for LambdaCallable {
         ctx: FunctionContext,
         args: Vec<JsonValue>,
     ) -> BoxFuture<'static, Result<JsonValue, JsonError>> {
-        let depth_guard = match LambdaDepthGuard::enter() {
+        let depth_guard = match LambdaDepthGuard::enter(self.captured_bindings.budget()) {
             Ok(guard) => guard,
             Err(err) => return Box::pin(async move { Err(err) }),
         };
@@ -261,7 +246,7 @@ pub(super) fn bind_recursive_name(function: &JsonFunction, name: &str) -> Option
 /// participate in knot-tying and are left untouched.
 pub(super) fn attach_shared_frame(
     function: &JsonFunction,
-    frame: &Arc<RwLock<Bindings>>,
+    frame: &Arc<RwLock<HashMap<String, JsonValue>>>,
 ) -> Option<JsonFunction> {
     let lambda = function
         .as_callable()
@@ -275,8 +260,8 @@ pub(super) fn attach_shared_frame(
 }
 
 /// Creates a fresh, empty shared let-rec frame.
-pub(super) fn new_shared_frame() -> Arc<RwLock<Bindings>> {
-    Arc::new(RwLock::new(Bindings::new()))
+pub(super) fn new_shared_frame() -> Arc<RwLock<HashMap<String, JsonValue>>> {
+    Arc::new(RwLock::new(HashMap::new()))
 }
 
 /// Returns `true` when the function is a lambda (and therefore can capture a

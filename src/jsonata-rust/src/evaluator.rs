@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,7 +12,7 @@ use serde_json::Value;
 
 use crate::error::Error;
 use crate::functions::core;
-use crate::types::{JsonArray, JsonFunction, JsonValue};
+use crate::types::{Budget, JsonArray, JsonFunction, JsonValue};
 
 mod callable;
 mod expressions;
@@ -21,7 +23,41 @@ mod signature;
 mod transform;
 mod value;
 
-type Bindings = HashMap<String, JsonValue>;
+/// A lexical environment frame: the variable map plus the current evaluation's
+/// shared [`Budget`]. It derefs to the underlying `HashMap`, so existing
+/// `get` / `insert` / `iter` / `contains_key` usage is unchanged; cloning a
+/// frame (as every nested scope does) shares the *same* `Budget` `Arc`, so the
+/// whole evaluation counts recursion against one owner instead of a thread-local.
+#[derive(Clone)]
+pub(crate) struct Bindings {
+    vars: HashMap<String, JsonValue>,
+    budget: Arc<Budget>,
+}
+
+impl Bindings {
+    fn from_map(vars: HashMap<String, JsonValue>, budget: Arc<Budget>) -> Self {
+        Self { vars, budget }
+    }
+
+    fn budget(&self) -> &Arc<Budget> {
+        &self.budget
+    }
+}
+
+impl Deref for Bindings {
+    type Target = HashMap<String, JsonValue>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.vars
+    }
+}
+
+impl DerefMut for Bindings {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.vars
+    }
+}
+
 const EVAL_MILLIS_BINDING: &str = "__jsonata_eval_millis";
 
 fn monotonic_eval_millis() -> i64 {
@@ -50,9 +86,10 @@ pub(crate) async fn evaluate_expression_async(
     ast: &Value,
     input: &JsonValue,
     functions: &HashMap<String, JsonFunction>,
+    budget: Arc<Budget>,
 ) -> Result<JsonValue, Error> {
-    let bindings = Bindings::new();
-    evaluate_expression_with_bindings_async(ast, input, functions, &bindings).await
+    let empty = HashMap::new();
+    evaluate_expression_with_bindings_async(ast, input, functions, &empty, budget).await
 }
 
 pub(crate) async fn evaluate_expression_with_bindings_async(
@@ -60,14 +97,16 @@ pub(crate) async fn evaluate_expression_with_bindings_async(
     input: &JsonValue,
     functions: &HashMap<String, JsonFunction>,
     bindings: &HashMap<String, JsonValue>,
+    budget: Arc<Budget>,
 ) -> Result<JsonValue, Error> {
-    let mut eval_bindings = bindings.clone();
-    if !eval_bindings.contains_key(EVAL_MILLIS_BINDING) {
-        eval_bindings.insert(
+    let mut vars = bindings.clone();
+    if !vars.contains_key(EVAL_MILLIS_BINDING) {
+        vars.insert(
             EVAL_MILLIS_BINDING.to_owned(),
             JsonValue::Number(monotonic_eval_millis() as f64),
         );
     }
+    let eval_bindings = Bindings::from_map(vars, budget);
 
     // Mirror upstream JSONata: if the input document is a plain JSON array (not
     // already a sequence) wrap it in a singleton outer-wrapper sequence so a
@@ -90,19 +129,10 @@ pub(crate) async fn evaluate_expression_with_bindings_async(
     eval(ast, &document, &document, functions, &eval_bindings).await
 }
 
-/// Grow the native stack when fewer than this many bytes remain. Sized to
-/// comfortably cover the synchronous helper frames between two consecutive
-/// `eval` calls (path / step / dispatch machinery), which are the recursion
-/// points that consume stack.
-const STACK_RED_ZONE: usize = 1024 * 1024;
-
-/// Size of each fresh stack segment allocated on demand when the red zone is
-/// hit. Deep recursion chains several of these together as needed.
-const STACK_GROW_SIZE: usize = 8 * 1024 * 1024;
-
 /// Wraps a future so every poll runs with a guaranteed minimum of native stack,
 /// allocating a fresh segment on demand (via `stacker`) when the remaining stack
-/// drops into the red zone.
+/// drops into the `red_zone`. The two sizes come from the evaluation's
+/// [`Budget`] (see `EvaluatorOptions`), so callers can tune them.
 ///
 /// Because the whole evaluator is a chain of boxed `eval` futures, polling a
 /// deeply nested expression consumes native stack proportional to the recursion
@@ -114,16 +144,20 @@ const STACK_GROW_SIZE: usize = 8 * 1024 * 1024;
 /// it merely perform a cheap remaining-stack check and never re-grow.
 struct GrowStack<F> {
     inner: F,
+    red_zone: usize,
+    grow_size: usize,
 }
 
 impl<F: Future> Future for GrowStack<F> {
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
-        // SAFETY: standard pin projection — `inner` is structurally pinned and
-        // never moved out of `self`.
-        let inner = unsafe { self.map_unchecked_mut(|slot| &mut slot.inner) };
-        stacker::maybe_grow(STACK_RED_ZONE, STACK_GROW_SIZE, || inner.poll(cx))
+        // SAFETY: `inner` is structurally pinned and never moved out of `self`;
+        // `red_zone`/`grow_size` are `Copy` scalars read by value, not pinned.
+        let this = unsafe { self.get_unchecked_mut() };
+        let (red_zone, grow_size) = (this.red_zone, this.grow_size);
+        let inner = unsafe { Pin::new_unchecked(&mut this.inner) };
+        stacker::maybe_grow(red_zone, grow_size, || inner.poll(cx))
     }
 }
 
@@ -134,7 +168,9 @@ pub(super) fn eval<'a>(
     functions: &'a HashMap<String, JsonFunction>,
     bindings: &'a Bindings,
 ) -> BoxFuture<'a, Result<JsonValue, Error>> {
-    Box::pin(GrowStack { inner: async move {
+    let red_zone = bindings.budget().stack_red_zone();
+    let grow_size = bindings.budget().stack_grow_size();
+    Box::pin(GrowStack { red_zone, grow_size, inner: async move {
     let node_type = node.get("type").and_then(Value::as_str).unwrap_or_default();
 
     let mut result = match node_type {

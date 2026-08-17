@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -6,7 +7,7 @@ use crate::error::Error;
 use crate::evaluator;
 use crate::parser;
 use crate::registry;
-use crate::types::{JsonFunction, JsonValue};
+use crate::types::{Budget, JsonFunction, JsonValue};
 
 /// Initial stack size (bytes) for the thread that drives the sync evaluation
 /// facade.
@@ -24,6 +25,75 @@ use crate::types::{JsonFunction, JsonValue};
 /// still tune the base per evaluator. This only affects the synchronous facade —
 /// `evaluate_async` uses the caller's executor (which grows the same way).
 pub const DEFAULT_SYNC_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+/// Default red zone (bytes) for on-demand native-stack growth: the evaluator
+/// allocates a fresh stack segment when fewer than this many bytes remain.
+/// Sized to comfortably cover the synchronous helper frames between two
+/// consecutive `eval` calls (path / step / dispatch machinery).
+pub const DEFAULT_STACK_RED_ZONE: usize = 1024 * 1024;
+
+/// Default size (bytes) of each fresh native-stack segment allocated on demand
+/// when the red zone is hit. Deep recursion chains several together as needed.
+pub const DEFAULT_STACK_GROW_SIZE: usize = 8 * 1024 * 1024;
+
+/// Default maximum *non-tail* lambda-call nesting depth before an evaluation
+/// aborts with `U1001`. Because the native stack grows on demand, this — not a
+/// fixed stack size — is what bounds runaway non-tail recursion. It sits well
+/// above the deepest non-tail recursion in the compatibility suite (~150) and
+/// any realistic query, while keeping a runaway's transient footprint modest.
+pub const DEFAULT_MAX_NON_TAIL_DEPTH: usize = 2_500;
+
+/// Default backstop on successive tail-call steps the trampoline drives before
+/// aborting with `U1001`. Tail recursion runs in O(1) native stack, so this is
+/// an execution budget (mirroring the reference engine's timebox), not a stack
+/// bound; it sits an order of magnitude above the deepest tail recursion in the
+/// compatibility suite (~6.5k).
+pub const DEFAULT_MAX_TAIL_CALL_STEPS: usize = 100_000;
+
+/// Tunable limits and stack-growth knobs applied to each evaluation.
+///
+/// Every evaluation seeds a fresh per-run budget from these values, so the
+/// recursion limits are execution budgets owned by the evaluation (see
+/// [`crate::types::Budget`]) rather than global constants. The recursion limits
+/// accept `None` to disable that guard entirely (unbounded), which is only safe
+/// when the expression is trusted to terminate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvaluatorOptions {
+    /// Initial OS thread stack size for the synchronous evaluation facade.
+    /// Ignored by the async methods (which use the caller's executor).
+    pub sync_stack_size: usize,
+    /// Grow the native stack when fewer than this many bytes remain.
+    pub stack_red_zone: usize,
+    /// Size of each fresh native-stack segment allocated on demand.
+    pub stack_grow_size: usize,
+    /// Maximum non-tail lambda-call nesting depth; `None` disables the guard.
+    pub max_non_tail_depth: Option<usize>,
+    /// Maximum successive tail-call steps; `None` disables the backstop.
+    pub max_tail_call_steps: Option<usize>,
+}
+
+impl Default for EvaluatorOptions {
+    fn default() -> Self {
+        Self {
+            sync_stack_size: DEFAULT_SYNC_STACK_SIZE,
+            stack_red_zone: DEFAULT_STACK_RED_ZONE,
+            stack_grow_size: DEFAULT_STACK_GROW_SIZE,
+            max_non_tail_depth: Some(DEFAULT_MAX_NON_TAIL_DEPTH),
+            max_tail_call_steps: Some(DEFAULT_MAX_TAIL_CALL_STEPS),
+        }
+    }
+}
+
+impl EvaluatorOptions {
+    fn make_budget(&self) -> Arc<Budget> {
+        Arc::new(Budget::new(
+            self.max_non_tail_depth,
+            self.max_tail_call_steps,
+            self.stack_red_zone,
+            self.stack_grow_size,
+        ))
+    }
+}
 
 /// Drives `future` to completion on a dedicated worker thread, returning its
 /// result. Uses `std::thread::scope` so the future may borrow non-`'static`
@@ -319,7 +389,7 @@ impl FunctionRegistry {
 #[derive(Clone)]
 pub struct Evaluator {
     functions: FunctionRegistry,
-    sync_stack_size: usize,
+    options: EvaluatorOptions,
 }
 
 impl Default for Evaluator {
@@ -339,7 +409,7 @@ impl Evaluator {
     pub fn new(functions: FunctionRegistry) -> Self {
         Self {
             functions,
-            sync_stack_size: DEFAULT_SYNC_STACK_SIZE,
+            options: EvaluatorOptions::default(),
         }
     }
 
@@ -369,13 +439,64 @@ impl Evaluator {
     /// assert_eq!(evaluator.sync_stack_size(), 32 * 1024 * 1024);
     /// ```
     pub fn with_sync_stack_size(mut self, stack_size: usize) -> Self {
-        self.sync_stack_size = stack_size;
+        self.options.sync_stack_size = stack_size;
         self
     }
 
     /// Returns the configured synchronous evaluation thread stack size.
     pub fn sync_stack_size(&self) -> usize {
-        self.sync_stack_size
+        self.options.sync_stack_size
+    }
+
+    /// Replaces the full set of [`EvaluatorOptions`] (recursion budgets and
+    /// stack-growth knobs) applied to each evaluation.
+    ///
+    /// # Examples
+    /// ```rust
+    /// use async_jsonata_rust::{Evaluator, EvaluatorOptions};
+    ///
+    /// let options = EvaluatorOptions {
+    ///     max_tail_call_steps: None, // unbounded tail recursion
+    ///     ..EvaluatorOptions::default()
+    /// };
+    /// let evaluator = Evaluator::with_builtins().with_options(options);
+    /// assert_eq!(evaluator.options().max_tail_call_steps, None);
+    /// ```
+    pub fn with_options(mut self, options: EvaluatorOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    /// Returns the evaluator's configured options.
+    pub fn options(&self) -> &EvaluatorOptions {
+        &self.options
+    }
+
+    /// Sets the maximum non-tail lambda-call nesting depth (`None` = unbounded).
+    ///
+    /// # Examples
+    /// ```rust
+    /// let evaluator = async_jsonata_rust::Evaluator::with_builtins()
+    ///     .with_max_non_tail_depth(Some(10_000));
+    /// assert_eq!(evaluator.options().max_non_tail_depth, Some(10_000));
+    /// ```
+    pub fn with_max_non_tail_depth(mut self, depth: Option<usize>) -> Self {
+        self.options.max_non_tail_depth = depth;
+        self
+    }
+
+    /// Sets the maximum number of successive tail-call steps the trampoline
+    /// drives before aborting with `U1001` (`None` = unbounded).
+    ///
+    /// # Examples
+    /// ```rust
+    /// let evaluator = async_jsonata_rust::Evaluator::with_builtins()
+    ///     .with_max_tail_call_steps(Some(1_000_000));
+    /// assert_eq!(evaluator.options().max_tail_call_steps, Some(1_000_000));
+    /// ```
+    pub fn with_max_tail_call_steps(mut self, steps: Option<usize>) -> Self {
+        self.options.max_tail_call_steps = steps;
+        self
     }
 
     /// Parses expression using stable parser API.
@@ -402,7 +523,10 @@ impl Evaluator {
     /// # Ok::<(), async_jsonata_rust::Error>(())
     /// ```
     pub fn evaluate(&self, expression: &Expression, input: &JsonValue) -> Result<JsonValue, Error> {
-        block_on_worker(self.evaluate_async(expression, input), self.sync_stack_size)
+        block_on_worker(
+            self.evaluate_async(expression, input),
+            self.options.sync_stack_size,
+        )
     }
 
     /// Asynchronously evaluates a parsed expression against input JSON.
@@ -428,11 +552,16 @@ impl Evaluator {
         expression: &Expression,
         input: &JsonValue,
     ) -> Result<JsonValue, Error> {
-        evaluator::evaluate_expression_async(expression.ast(), input, self.functions.as_map())
-            .await
-            .map_err(|err| {
-                err.with_context("expression", Value::String(expression.source().to_owned()))
-            })
+        evaluator::evaluate_expression_async(
+            expression.ast(),
+            input,
+            self.functions.as_map(),
+            self.options.make_budget(),
+        )
+        .await
+        .map_err(|err| {
+            err.with_context("expression", Value::String(expression.source().to_owned()))
+        })
     }
 
     /// Evaluates parsed expression against input JSON with external variable bindings.
@@ -461,7 +590,7 @@ impl Evaluator {
     ) -> Result<JsonValue, Error> {
         block_on_worker(
             self.evaluate_with_bindings_async(expression, input, bindings),
-            self.sync_stack_size,
+            self.options.sync_stack_size,
         )
     }
 
@@ -496,6 +625,7 @@ impl Evaluator {
             input,
             self.functions.as_map(),
             bindings,
+            self.options.make_budget(),
         )
         .await
         .map_err(|err| {

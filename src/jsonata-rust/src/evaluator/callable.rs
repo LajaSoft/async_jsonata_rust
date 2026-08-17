@@ -113,11 +113,13 @@ impl JsonCallable for PartialCallable {
             consumed += 1;
         }
 
+        let budget = ctx.budget().cloned();
         let focus = ctx
             .focus()
             .map(|focus| focus.input.clone())
             .unwrap_or_else(|| self.captured_focus.clone());
-        let call_ctx = FunctionContext::with_focus(JsonataFocus::new(focus));
+        let call_ctx =
+            FunctionContext::with_focus(JsonataFocus::new(focus)).with_budget(budget);
         self.target.call(call_ctx, merged)
     }
 
@@ -401,7 +403,8 @@ fn eval_function_internal<'a>(
             }
             Error::new(err.code, details)
         })?;
-        let ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
+        let ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()))
+            .with_budget(Some(bindings.budget().clone()));
         return finish_call(callable, ctx, validated, node, procedure, drive_thunks).await;
     }
 
@@ -416,7 +419,8 @@ fn eval_function_internal<'a>(
         }
     }
 
-    let ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
+    let ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()))
+        .with_budget(Some(bindings.budget().clone()));
     finish_call(callable, ctx, args, node, procedure, drive_thunks).await
     })
 }
@@ -790,7 +794,8 @@ pub(super) fn eval_apply<'a>(
                     },
                 ))));
             }
-            let ctx = FunctionContext::with_focus(JsonataFocus::new(base.clone()));
+            let ctx = FunctionContext::with_focus(JsonataFocus::new(base.clone()))
+                .with_budget(Some(bindings.budget().clone()));
             callable.call_forced(ctx, vec![base]).await.map_err(Error::from)
         }
         _ => Err(Error::new(
@@ -815,17 +820,20 @@ impl JsonCallable for ChainCallable {
     ) -> BoxFuture<'static, Result<JsonValue, crate::types::JsonError>> {
         let first = self.first.clone();
         let second = self.second.clone();
+        let budget = ctx.budget().cloned();
         let focus = ctx
             .focus()
             .map(|focus| focus.input.clone())
             .unwrap_or(JsonValue::Undefined);
         Box::pin(async move {
-            let first_ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()));
+            let first_ctx = FunctionContext::with_focus(JsonataFocus::new(focus.clone()))
+                .with_budget(budget.clone());
             // Drive the first function's result to a value before feeding it to
             // the second; `second`'s own result is driven by whoever invoked the
             // chain (always through `call_forced`).
             let intermediate = first.call_forced(first_ctx, args).await?;
-            let second_ctx = FunctionContext::with_focus(JsonataFocus::new(focus));
+            let second_ctx =
+                FunctionContext::with_focus(JsonataFocus::new(focus)).with_budget(budget);
             second.call(second_ctx, vec![intermediate]).await
         })
     }

@@ -240,26 +240,40 @@ fn case_passes(case: &Case) -> bool {
     }
 }
 
-/// Groups with documented, architectural gaps may pass fewer than all cases.
-/// Every other group must be 100% green. Bumping any of these floors (or
-/// removing the entry) is the signal that a gap was closed.
-fn floor_for(group: &str) -> Option<usize> {
+/// Number of cases a group is permitted to fail. Every group must be fully
+/// green (`0`) except those with documented, architectural gaps. Expressing the
+/// allowance as a failure *count* — rather than an absolute pass floor — means a
+/// newly-added upstream case that fails still trips the guard (a fixed floor
+/// would let it hide under the slack); lowering an allowance (or removing the
+/// entry) is the signal that a gap was closed.
+fn allowed_failures(group: &str) -> usize {
     match group {
         // Two documented artifacts of the test harness, not engine bugs:
         // `$factorial(100)` expects U1001 but the harness does not enforce the
         // per-case depth limit, and `$factorial(150)` differs only in the last
         // f64 digit (multiplication-order rounding). Every other group is 100%.
-        "tail-recursion" => Some(8),
-        _ => None,
+        "tail-recursion" => 2,
+        _ => 0,
     }
 }
+
+/// Aggregate invariants guarding against silent loss of coverage: if a whole
+/// group directory or a batch of fixtures is deleted, the per-group trials
+/// simply would not run for the missing groups and nothing would fail. These
+/// floors (checked by the `suite::completeness` trial) restore the absolute
+/// case/group counts the previous single-`#[test]` total floor implied.
+const EXPECTED_GROUPS: usize = 102;
+const EXPECTED_CASES: usize = 1653;
 
 // The suite runs under a custom `libtest-mimic` harness (see `harness = false`
 // in Cargo.toml) so each group is a named test the framework reports as it runs
 // — e.g. `test suite::tail-recursion ... ok`. One trial per group keeps the
 // per-group floor semantics identical to the previous single `#[test]`: every
-// group must reach its floor (100% unless listed in `floor_for`). Since the
-// floors sum to the old total floor (1651), the aggregate is preserved too.
+// group must be fully green except the documented allowances in
+// `allowed_failures`. A separate `suite::completeness` trial asserts the
+// absolute group/case counts so deleting whole groups or batches of fixtures —
+// which would otherwise just skip the missing per-group trials — trips a
+// failure.
 fn main() {
     let args = libtest_mimic::Arguments::from_args();
 
@@ -282,15 +296,16 @@ fn main() {
         .collect();
     groups.sort();
 
-    let trials: Vec<libtest_mimic::Trial> = groups
-        .into_iter()
+    let mut trials: Vec<libtest_mimic::Trial> = groups
+        .iter()
+        .cloned()
         .map(|group| {
             let datasets = std::sync::Arc::clone(&datasets);
             let group_dir = groups_dir.join(&group);
             libtest_mimic::Trial::test(format!("suite::{group}"), move || {
                 let cases = load_group_cases(&group_dir, &datasets);
                 let pass = cases.iter().filter(|c| case_passes(c)).count();
-                let floor = floor_for(&group).unwrap_or(cases.len());
+                let floor = cases.len().saturating_sub(allowed_failures(&group));
                 if pass < floor {
                     return Err(format!(
                         "{pass}/{} passing — regressed below floor {floor}",
@@ -302,6 +317,38 @@ fn main() {
             })
         })
         .collect();
+
+    // Aggregate completeness guard: catches deletion of whole groups or batches
+    // of fixtures, which the per-group trials cannot (a missing group simply
+    // yields no trial). Only counts cases — the pass floors live in the
+    // per-group trials — so it adds negligible runtime.
+    trials.push({
+        let datasets = std::sync::Arc::clone(&datasets);
+        let groups_dir = groups_dir.clone();
+        let group_names = groups.clone();
+        libtest_mimic::Trial::test("suite::completeness", move || {
+            let group_count = group_names.len();
+            if group_count < EXPECTED_GROUPS {
+                return Err(format!(
+                    "only {group_count} groups discovered — expected at least \
+                     {EXPECTED_GROUPS}; was a whole group directory removed?"
+                )
+                .into());
+            }
+            let total_cases: usize = group_names
+                .iter()
+                .map(|group| load_group_cases(&groups_dir.join(group), &datasets).len())
+                .sum();
+            if total_cases < EXPECTED_CASES {
+                return Err(format!(
+                    "only {total_cases} cases discovered — expected at least \
+                     {EXPECTED_CASES}; were fixtures removed?"
+                )
+                .into());
+            }
+            Ok(())
+        })
+    });
 
     libtest_mimic::run(&args, trials).exit();
 }

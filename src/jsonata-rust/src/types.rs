@@ -2,6 +2,7 @@ use futures::future::BoxFuture;
 use serde_json::{Number, Value};
 use std::any::Any;
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -293,6 +294,14 @@ impl JsonFunction {
         // The focus to drive thunks with; thunks capture their own focus, so this
         // only feeds signature/context validation, which thunks do not use.
         let focus = ctx.focus().map(|handle| handle.input.clone());
+        // Enforce the current evaluation's (configurable) tail-step limit when a
+        // budget is present; fall back to the compiled-in default only for
+        // callables invoked outside an evaluation. `None` disables the backstop.
+        let budget = ctx.budget().cloned();
+        let max_tail_call_steps = match &budget {
+            Some(budget) => budget.max_tail_call_steps(),
+            None => Some(MAX_TAIL_CALL_STEPS),
+        };
         Box::pin(async move {
             let mut value = this.call(ctx, args).await?;
             let mut steps = 0usize;
@@ -301,16 +310,19 @@ impl JsonFunction {
                     JsonValue::Function(function) if function.callable.is_thunk() => function.clone(),
                     _ => return Ok(value),
                 };
-                if steps >= MAX_TAIL_CALL_STEPS {
-                    return Err(JsonError::new(
-                        "U1001",
-                        "Stack overflow error: non-terminating recursive function call",
-                    ));
+                if let Some(max) = max_tail_call_steps {
+                    if steps >= max {
+                        return Err(JsonError::new(
+                            "U1001",
+                            "Stack overflow error: non-terminating recursive function call",
+                        ));
+                    }
                 }
                 let thunk_ctx = match &focus {
                     Some(input) => FunctionContext::with_focus(JsonataFocus::new(input.clone())),
                     None => FunctionContext::empty(),
-                };
+                }
+                .with_budget(budget.clone());
                 value = thunk.call(thunk_ctx, Vec::new()).await?;
                 steps += 1;
             }
@@ -368,21 +380,41 @@ impl PartialEq for JsonataFocus {
 #[derive(Clone, Default)]
 pub struct FunctionContext {
     pub focus: Option<Arc<JsonataFocus>>,
+    /// The current evaluation's execution budget, propagated so the tail-call
+    /// trampoline ([`JsonFunction::call_forced`]) enforces the configured
+    /// (per-evaluation) step limit rather than only the compiled-in default.
+    /// `None` for contexts built outside an evaluation.
+    pub(crate) budget: Option<Arc<Budget>>,
 }
 
 impl FunctionContext {
     pub fn empty() -> Self {
-        Self { focus: None }
+        Self {
+            focus: None,
+            budget: None,
+        }
     }
 
     pub fn with_focus(focus: JsonataFocus) -> Self {
         Self {
             focus: Some(Arc::new(focus)),
+            budget: None,
         }
     }
 
     pub fn focus(&self) -> Option<Arc<JsonataFocus>> {
         self.focus.clone()
+    }
+
+    /// Attaches an evaluation budget, consuming and returning `self` for
+    /// chaining at call-dispatch sites.
+    pub(crate) fn with_budget(mut self, budget: Option<Arc<Budget>>) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    pub(crate) fn budget(&self) -> Option<&Arc<Budget>> {
+        self.budget.as_ref()
     }
 }
 
@@ -423,14 +455,97 @@ pub trait JsonCallable: Send + Sync + Any {
     fn as_any(&self) -> &(dyn Any + Send + Sync);
 }
 
-/// Maximum number of successive tail calls the trampoline drives before giving
-/// up with `U1001`. Tail recursion runs in O(1) native stack, so this is not a
-/// stack bound — it is only a backstop that terminates a non-productive infinite
-/// tail loop (mirroring the reference engine's timebox, which our harness does
-/// not enforce). It is set an order of magnitude above the deepest tail
-/// recursion in the compatibility suite (~6.5k) so it never caps a real
-/// computation, while still stopping a runaway loop promptly.
+/// Default backstop for the number of successive tail calls the trampoline
+/// drives before giving up with `U1001`. Tail recursion runs in O(1) native
+/// stack, so this is not a stack bound — it is only a backstop that terminates a
+/// non-productive infinite tail loop (mirroring the reference engine's timebox,
+/// which our harness does not enforce). It is set an order of magnitude above
+/// the deepest tail recursion in the compatibility suite (~6.5k) so it never
+/// caps a real computation, while still stopping a runaway loop promptly. Used
+/// only when a call reaches [`JsonFunction::call_forced`] without a per-evaluation
+/// [`Budget`] (e.g. a directly-invoked callable); an evaluation started through
+/// the public API always carries a `Budget` whose (configurable) limit wins.
 pub(crate) const MAX_TAIL_CALL_STEPS: usize = 100_000;
+
+/// Per-evaluation execution budget: bounds runaway recursion and carries the
+/// on-demand stack-growth tuning knobs. Exactly one instance is created per
+/// top-level evaluation and shared — via `Arc` — by every lexical scope
+/// ([`crate::evaluator`] `Bindings`) and every [`FunctionContext`] within that
+/// evaluation.
+///
+/// Owning the depth counter here, rather than in a `thread_local!`, is what
+/// makes the non-tail recursion guard correct under `evaluate_async` on a
+/// work-stealing multi-thread executor: a single evaluation's `BoxFuture` may be
+/// polled — and its guards created and dropped — on *different* threads, so a
+/// per-thread counter would drift (leaking depth on one thread, underflowing on
+/// another) and eventually raise a spurious `U1001`. An atomic owned by the
+/// evaluation increments and decrements the same cell regardless of thread, and
+/// concurrent evaluations each get their own `Budget`, so they never interfere.
+#[derive(Debug)]
+pub(crate) struct Budget {
+    /// Current non-tail lambda-call nesting depth (calls live on the native
+    /// stack simultaneously). Tail calls do not count — the trampoline unwinds
+    /// each before the next.
+    non_tail_depth: AtomicUsize,
+    /// Maximum non-tail nesting depth; `None` disables the guard.
+    max_non_tail_depth: Option<usize>,
+    /// Maximum successive tail-call steps; `None` disables the backstop.
+    max_tail_call_steps: Option<usize>,
+    /// Grow the native stack when fewer than this many bytes remain.
+    stack_red_zone: usize,
+    /// Size of each fresh stack segment allocated on demand.
+    stack_grow_size: usize,
+}
+
+impl Budget {
+    pub(crate) fn new(
+        max_non_tail_depth: Option<usize>,
+        max_tail_call_steps: Option<usize>,
+        stack_red_zone: usize,
+        stack_grow_size: usize,
+    ) -> Self {
+        Self {
+            non_tail_depth: AtomicUsize::new(0),
+            max_non_tail_depth,
+            max_tail_call_steps,
+            stack_red_zone,
+            stack_grow_size,
+        }
+    }
+
+    pub(crate) fn max_tail_call_steps(&self) -> Option<usize> {
+        self.max_tail_call_steps
+    }
+
+    pub(crate) fn stack_red_zone(&self) -> usize {
+        self.stack_red_zone
+    }
+
+    pub(crate) fn stack_grow_size(&self) -> usize {
+        self.stack_grow_size
+    }
+
+    /// Enters one level of non-tail recursion. Returns `Err(U1001)` (having
+    /// rolled the increment back) if it would exceed `max_non_tail_depth`.
+    pub(crate) fn enter_non_tail(&self) -> Result<(), JsonError> {
+        let depth = self.non_tail_depth.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(max) = self.max_non_tail_depth {
+            if depth > max {
+                self.non_tail_depth.fetch_sub(1, Ordering::Relaxed);
+                return Err(JsonError::new(
+                    "U1001",
+                    "Stack overflow error: non-terminating recursive function call",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Leaves one level of non-tail recursion.
+    pub(crate) fn leave_non_tail(&self) {
+        self.non_tail_depth.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct JsonError {

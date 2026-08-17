@@ -30,7 +30,8 @@ pub(super) fn eval_block<'a>(
     // function is bound we also record it into the frame, so earlier-defined
     // sibling functions can resolve later-defined ones at call time (let-rec /
     // mutual recursion). Created lazily on first function binding.
-    let mut shared_frame: Option<std::sync::Arc<std::sync::RwLock<Bindings>>> = None;
+    let mut shared_frame: Option<std::sync::Arc<std::sync::RwLock<HashMap<String, JsonValue>>>> =
+        None;
     for expr in expressions {
         if expr.get("type").and_then(Value::as_str) == Some("bind") {
             // Collect every variable name along a chain of nested binds

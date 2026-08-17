@@ -27,10 +27,12 @@ pub(super) fn eval_transform_apply<'a>(
         let JsonValue::Function(callable) = clone_binding else {
             return Err(Error::new("T2013", "The transform expression cloned the input using $clone(), but this was overridden by a non-function value"));
         };
-        let ctx = FunctionContext::with_focus(JsonataFocus::new(base.clone()));
+        let ctx = FunctionContext::with_focus(JsonataFocus::new(base.clone()))
+            .with_budget(Some(bindings.budget().clone()));
         target_base = callable.call_forced(ctx, vec![base.clone()]).await.map_err(Error::from)?;
     } else if let Some(callable) = functions.get("clone") {
-        let ctx = FunctionContext::with_focus(JsonataFocus::new(base.clone()));
+        let ctx = FunctionContext::with_focus(JsonataFocus::new(base.clone()))
+            .with_budget(Some(bindings.budget().clone()));
         target_base = callable.call_forced(ctx, vec![base.clone()]).await.map_err(Error::from)?;
     }
 
